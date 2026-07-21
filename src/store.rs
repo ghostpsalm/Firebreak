@@ -10,8 +10,8 @@ pub struct Store {
 
 /// Bump when the attribution model changes so existing DBs auto-reset on
 /// next open. v3 = scope attribution with unconstrained-rule exclusion and
-/// per-profile counts.
-const MODEL_VERSION: &str = "3";
+/// per-profile counts. v4 = disabled rules excluded from attribution (#1).
+const MODEL_VERSION: &str = "4";
 
 /// Default DB location: %ProgramData%\firebreak\firebreak.db (survives per-user
 /// profile churn; tool runs elevated anyway).
