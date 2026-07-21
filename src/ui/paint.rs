@@ -1994,7 +1994,6 @@ fn unattributed_body(app: &App, ui: &mut egui::Ui) {
             let p = ui.painter();
             let y = rr.center().y;
             p.text(Pos2::new(rect.left() + PAGE, y), Align2::LEFT_CENTER, &u.filter_name, t::sans(11.0), t::INK());
-            p.text(Pos2::new(rect.left() + PAGE + 320.0, y), Align2::LEFT_CENTER, format!("filter {}", u.filter_id), t::mono(10.5), t::TERTIARY());
             p.text(Pos2::new(rect.left() + PAGE + 470.0, y), Align2::LEFT_CENTER, format!("{} allow / {} block", u.usage.allow_count, u.usage.block_count), t::mono(10.5), t::SECONDARY());
             p.hline(rect.x_range(), rr.bottom() - 0.5, Stroke::new(1.0, t::CHROME()));
         }

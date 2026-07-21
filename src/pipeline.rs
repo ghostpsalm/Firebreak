@@ -62,11 +62,9 @@ fn describe_origin(origin: &str) -> String {
     }
 }
 
-/// One unattributed bucket, explained: which WFP filter the events matched
-/// (by recorded name when we have it), in which boot session.
+/// One unattributed bucket, explained: the default/system WFP filter the
+/// events matched (by recorded FilterOrigin name when we have it).
 pub struct UnmatchedRow {
-    pub filter_id: String,
-    pub boot_session: String,
     pub filter_name: String,
     pub usage: RuleUsage,
 }
@@ -413,8 +411,6 @@ fn build_unmatched(store: &Store) -> Result<Vec<UnmatchedRow>> {
             let origin = usage.rule_id.strip_prefix("default:").unwrap_or(&usage.rule_id);
             let label = labels.get(&usage.rule_id).cloned().unwrap_or_else(|| origin.to_string());
             UnmatchedRow {
-                filter_id: String::new(),
-                boot_session: String::new(),
                 filter_name: describe_origin(&label),
                 usage,
             }

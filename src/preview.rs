@@ -221,8 +221,6 @@ fn listener(proto: &str, addr: &str, port: u32, pid: u32, name: &str, path: &str
 fn unmatched_row(fid: &str, name: &str, allow: i64, block: i64) -> UnmatchedRow {
     let boot = iso_ago(15 * 24 * 60);
     UnmatchedRow {
-        filter_id: fid.into(),
-        boot_session: boot.clone(),
         filter_name: name.into(),
         usage: RuleUsage {
             rule_id: format!("unmatched:{boot}:{fid}"),

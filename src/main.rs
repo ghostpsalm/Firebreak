@@ -329,15 +329,13 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     if !result.unmatched.is_empty() {
         println!("\n=== Unattributed events (top 20) ===");
         println!(
-            "(WFP filters that are not firewall rules — e.g. default block policy — or \
-             filters from boots with no firebreak run)"
+            "(traffic decided by a default/system WFP filter, not a firewall rule — \
+             e.g. the default block policy)"
         );
         for u in result.unmatched.iter().take(20) {
             println!(
-                "  {} [filter {} @ {}]: {} allow / {} block, apps: {}",
+                "  {}: {} allow / {} block, apps: {}",
                 u.filter_name,
-                u.filter_id,
-                u.boot_session.get(..10).unwrap_or(&u.boot_session),
                 u.usage.allow_count,
                 u.usage.block_count,
                 u.usage
