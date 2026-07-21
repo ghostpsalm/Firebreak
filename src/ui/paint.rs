@@ -708,7 +708,10 @@ fn about_updates(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
             UpdateState::Idle => ("Check whether a newer build is available.".into(), t::SECONDARY(), Act::Check, Some("Check now")),
             UpdateState::Checking => ("Checking for updates…".into(), t::SECONDARY(), Act::None, None),
             UpdateState::UpToDate(v) => (format!("You're on the latest version ({v})."), t::SECONDARY(), Act::None, None),
-            UpdateState::Available(rel) => (format!("Version {} is available (you have {}).", rel.latest, rel.current), t::INK(), Act::Download, Some("Download & install")),
+            UpdateState::Available(rel) if crate::update::signing_configured() => (format!("Version {} is available (you have {}).", rel.latest, rel.current), t::INK(), Act::Download, Some("Download & install")),
+            // a newer build exists but this build can't verify a signed
+            // download, so in-app install is withheld (fail closed)
+            UpdateState::Available(rel) => (format!("Version {} is available (you have {}). Download it from the Releases page — in-app update is disabled in this build.", rel.latest, rel.current), t::ADVISORY_TEXT(), Act::None, None),
             UpdateState::Downloading => ("Downloading update…".into(), t::SECONDARY(), Act::None, None),
             UpdateState::Ready(exe) => ("Update installed — restart to finish.".into(), t::INK(), Act::Restart(exe.clone()), Some("Restart now")),
             UpdateState::Error(e) => (e.clone(), t::DESTRUCTIVE(), Act::Check, Some("Try again")),

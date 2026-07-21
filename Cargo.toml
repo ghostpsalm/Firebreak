@@ -23,6 +23,7 @@ png = "0.17"
 quick-xml = "0.36"
 # offline collect/review bundles (.zip); deflate only, no extra codecs
 zip = { version = "2", default-features = false, features = ["deflate"] }
+minisign-verify = "0.2.5"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.14"

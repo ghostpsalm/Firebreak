@@ -22,6 +22,22 @@ pub fn download_url() -> String {
     format!("https://github.com/{REPO}/releases/latest/download/{ASSET}")
 }
 
+/// Detached minisign signature published next to the asset.
+pub fn signature_url() -> String {
+    format!("{}.minisig", download_url())
+}
+
+/// Base64 minisign public key that release assets are signed with — the key
+/// line from `minisign.pub`. Empty until release signing is provisioned;
+/// while empty, `download_and_install` refuses to run, so an unverified
+/// binary is never installed with this tool's elevated privileges (issue #2).
+pub const TRUSTED_PUBLIC_KEY: &str = "";
+
+/// Whether this build can verify an update (a signing key is pinned).
+pub fn signing_configured() -> bool {
+    !TRUSTED_PUBLIC_KEY.is_empty()
+}
+
 #[derive(Clone)]
 pub struct Release {
     /// Newest published version, normalized to `major.minor.patch.build`.
@@ -87,22 +103,29 @@ fn latest_tag_subprocess(api: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Download the latest asset and swap it in next to the running exe. On success
-/// the running image has been moved to `<name>.old` and the new build sits in
-/// its place; the caller then prompts a restart. Returns the path to relaunch.
+/// Download the latest asset, verify its signature, and swap it in next to the
+/// running exe. On success the running image has been moved to `<name>.old`
+/// and the new build sits in its place; the caller then prompts a restart.
+/// Returns the path to relaunch.
+///
+/// The download is verified against the pinned minisign key *before* it is
+/// written into place and later run elevated — an unverifiable or
+/// signature-mismatched artifact is refused (fail closed).
 pub fn download_and_install() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("locating the running exe")?;
     let dir = exe.parent().ok_or_else(|| anyhow!("running exe has no parent directory"))?;
     let new = dir.join(format!("{ASSET}.new"));
     let old = dir.join(format!("{ASSET}.old"));
 
-    let url = download_url();
-    download_to(&url, &new)?;
-    let size = std::fs::metadata(&new).map(|m| m.len()).unwrap_or(0);
-    if size < 1024 {
-        let _ = std::fs::remove_file(&new);
-        return Err(anyhow!("the downloaded file looks incomplete ({size} bytes)"));
+    let bytes = fetch(&download_url()).context("downloading the update")?;
+    if bytes.len() < 1024 {
+        return Err(anyhow!("the downloaded file looks incomplete ({} bytes)", bytes.len()));
     }
+    // authenticity gate: this binary runs elevated, so never install code we
+    // can't verify came from the holder of the pinned signing key
+    verify_signature(&bytes)?;
+
+    std::fs::write(&new, &bytes).with_context(|| format!("writing {}", new.display()))?;
 
     // Windows lets us rename a running exe but not overwrite it: move the
     // running image aside, then swap the new build into its place.
@@ -115,16 +138,43 @@ pub fn download_and_install() -> Result<PathBuf> {
     Ok(exe)
 }
 
-/// Download `url` to `dest`. WinHTTP first (no subprocess); PowerShell fallback.
+/// Verify `bytes` against the pinned minisign public key using the detached
+/// `.minisig` published next to the asset. Fails closed: no configured key,
+/// an unfetchable/malformed signature, or a mismatch all refuse the install.
 #[cfg(windows)]
-fn download_to(url: &str, dest: &Path) -> Result<()> {
+fn verify_signature(bytes: &[u8]) -> Result<()> {
+    use minisign_verify::{PublicKey, Signature};
+    if !signing_configured() {
+        return Err(anyhow!(
+            "self-update is unavailable in this build: no release-signing key is configured, \
+             so the download cannot be verified and will not be installed"
+        ));
+    }
+    let pk = PublicKey::from_base64(TRUSTED_PUBLIC_KEY)
+        .map_err(|e| anyhow!("invalid pinned public key: {e}"))?;
+    let sig_text = fetch(&signature_url())
+        .context("downloading the release signature (.minisig)")
+        .and_then(|b| String::from_utf8(b).context("signature is not valid UTF-8"))?;
+    let sig = Signature::decode(&sig_text).map_err(|e| anyhow!("malformed signature: {e}"))?;
+    pk.verify(bytes, &sig, false)
+        .map_err(|e| anyhow!("signature verification failed — refusing to install: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn verify_signature(_bytes: &[u8]) -> Result<()> {
+    anyhow::bail!("updates are only available on Windows")
+}
+
+/// Fetch a URL into memory. WinHTTP first (no subprocess); PowerShell fallback.
+#[cfg(windows)]
+fn fetch(url: &str) -> Result<Vec<u8>> {
     match crate::winhttp::get(url, "") {
-        Ok(bytes) => {
-            std::fs::write(dest, &bytes).with_context(|| format!("writing {}", dest.display()))?;
-            Ok(())
-        }
+        Ok(bytes) => Ok(bytes),
         Err(e) => {
-            eprintln!("WinHTTP download failed ({e:#}); falling back to PowerShell");
+            eprintln!("WinHTTP fetch failed ({e:#}); falling back to PowerShell");
+            let dest = std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
+            let _ = std::fs::remove_file(&dest);
             let script = format!(
                 "$ErrorActionPreference='Stop'; \
                  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
@@ -136,16 +186,18 @@ fn download_to(url: &str, dest: &Path) -> Result<()> {
                 .output()
                 .context("launching PowerShell for the download")?;
             if !out.status.success() {
-                let _ = std::fs::remove_file(dest);
+                let _ = std::fs::remove_file(&dest);
                 return Err(anyhow!("download failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
             }
-            Ok(())
+            let bytes = std::fs::read(&dest).with_context(|| format!("reading {}", dest.display()))?;
+            let _ = std::fs::remove_file(&dest);
+            Ok(bytes)
         }
     }
 }
 
 #[cfg(not(windows))]
-fn download_to(_url: &str, _dest: &Path) -> Result<()> {
+fn fetch(_url: &str) -> Result<Vec<u8>> {
     anyhow::bail!("downloads are only available on Windows")
 }
 
@@ -205,5 +257,12 @@ mod tests {
         assert!(!is_newer("0.5.3.1000", "0.5.3.1000"));
         assert!(!is_newer("0.5.3", "0.5.3.0"));
         assert!(!is_newer("0.5.2.5000", "0.5.3.1"));
+    }
+
+    #[test]
+    fn install_fails_closed_without_a_signing_key() {
+        // until a real key is pinned, self-install must stay disabled so an
+        // unverified elevated binary is never written into place (issue #2)
+        assert!(!signing_configured());
     }
 }
