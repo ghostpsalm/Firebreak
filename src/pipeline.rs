@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::listeners::{self, Listener};
 use crate::model::RuleUsage;
