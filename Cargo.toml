@@ -1,6 +1,6 @@
 [package]
 name = "firebreak"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "On-demand Windows Firewall rule-usage auditor: correlates WFP audit events (5156/5157) with firewall rules to find unused and over-broad rules"
 license-file = "LICENSE"
