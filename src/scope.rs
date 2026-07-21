@@ -88,6 +88,13 @@ struct RuleScope {
 
 impl RuleScope {
     fn from_rule(r: &RuleInfo) -> Option<RuleScope> {
+        // A disabled rule is never loaded into WFP, so it cannot decide any
+        // connection — crediting it with a hit would be a false attribution.
+        // Exclude it from the index entirely (matches the module doc: we
+        // credit every *enabled* rule whose scope a connection satisfies).
+        if !r.is_enabled() {
+            return None;
+        }
         let dir_in = if r.direction.eq_ignore_ascii_case("inbound") {
             true
         } else if r.direction.eq_ignore_ascii_case("outbound") {
@@ -340,6 +347,23 @@ mod tests {
         let idx = ScopeIndex::build(&rules);
         let c = conn(&ev("Inbound", 6, "40000", "443", "chrome.exe"), "chrome.exe");
         assert!(idx.matching_rules(&c).is_empty());
+    }
+
+    #[test]
+    fn disabled_rule_is_excluded() {
+        // a disabled rule is not loaded into WFP and must never be credited,
+        // even when its scope matches the connection exactly (regression: F1)
+        let mut r = rule("Old RDP", "Inbound", Some("TCP"), Some("3389"), None, None);
+        r.enabled = "False".into();
+        let idx = ScopeIndex::build(&[r]);
+        let c = conn(&ev("Inbound", 6, "40000", "3389", "svchost.exe"), "svchost.exe");
+        assert!(idx.matching_rules(&c).is_empty());
+        // the same rule, enabled, does match — proving exclusion is the state,
+        // not the scope
+        let mut r2 = rule("RDP", "Inbound", Some("TCP"), Some("3389"), None, None);
+        r2.enabled = "True".into();
+        let idx2 = ScopeIndex::build(&[r2]);
+        assert_eq!(idx2.matching_rules(&c), vec!["RDP"]);
     }
 
     #[test]
