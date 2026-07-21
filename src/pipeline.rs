@@ -262,10 +262,21 @@ fn import_events(
             }
         }
     });
-    if let Err(e) = ingest {
-        let _ = store.rollback();
-        return Err(e).context("reading .evtx file");
-    }
+    let skipped = match ingest {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = store.rollback();
+            return Err(e).context("reading .evtx file");
+        }
+    };
+    let note = if skipped > 0 {
+        format!(
+            "{skipped} event(s) in the file matched the audit filter but could not be \
+             parsed and are not reflected below. {note}"
+        )
+    } else {
+        note
+    };
     for (id, label) in &bucket_labels {
         let _ = store.set_bucket_label(id, label);
     }
@@ -558,12 +569,24 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
             }
         }
     });
-    if let Err(e) = ingest {
-        let _ = store.rollback();
-        return Err(e).context("querying Security log");
-    }
+    let skipped = match ingest {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = store.rollback();
+            return Err(e).context("querying Security log");
+        }
+    };
     if errors > 0 {
         eprintln!("warning: {errors} events failed to record");
+    }
+    if skipped > 0 {
+        // the checkpoint advances past these, so flag them rather than let
+        // them vanish from the counts unseen
+        eprintln!("warning: {skipped} matched events could not be parsed and were skipped");
+        note = format!(
+            "{skipped} Security-log event(s) matched the audit filter but could not be \
+             parsed — they are not reflected in the counts below. {note}"
+        );
     }
 
     // advance the cursor to the newest record processed; the query resumes

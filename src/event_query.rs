@@ -130,36 +130,27 @@ mod win {
     }
 }
 
+/// Number of matched records the query filter returned but that could not
+/// be turned into an `EventRecord` — the XML failed to render, or lacked a
+/// field the parser requires. Returned so the caller can surface it: the
+/// ingestion checkpoint advances past these records, so a silent skip would
+/// exclude them from every count with no coverage-gap signal.
+pub type SkippedCount = u64;
+
 #[cfg(windows)]
 pub fn query_events(
     since_record_id: Option<u64>,
-    mut on_event: impl FnMut(EventRecord),
-) -> Result<u64> {
+    on_event: impl FnMut(EventRecord),
+) -> Result<SkippedCount> {
     let result_set = win::open_query("Security", &build_query(since_record_id), true)?;
-    let mut total: u64 = 0;
-    let mut render_buf: Vec<u16> = Vec::new();
-    loop {
-        let mut handles = [0isize; 64];
-        let returned = win::next_batch(&result_set, &mut handles)?;
-        if returned == 0 {
-            return Ok(total);
-        }
-        for &raw in handles.iter().take(returned as usize) {
-            if let Some(xml) = win::render_xml(raw, &mut render_buf) {
-                if let Some(ev) = parse_event_xml(&xml) {
-                    total += 1;
-                    on_event(ev);
-                }
-            }
-        }
-    }
+    drain_query(&result_set, on_event)
 }
 
 #[cfg(not(windows))]
 pub fn query_events(
     _since_record_id: Option<u64>,
     _on_event: impl FnMut(EventRecord),
-) -> Result<u64> {
+) -> Result<SkippedCount> {
     bail!("event log query is only available on Windows")
 }
 
@@ -167,35 +158,45 @@ pub fn query_events(
 #[cfg(windows)]
 pub fn query_events_from_file(
     path: &std::path::Path,
-    mut on_event: impl FnMut(EventRecord),
-) -> Result<u64> {
+    on_event: impl FnMut(EventRecord),
+) -> Result<SkippedCount> {
     let xpath = build_query(None);
     let result_set = win::open_query_file(&path.to_string_lossy(), &xpath)?;
-    let mut total: u64 = 0;
-    let mut render_buf: Vec<u16> = Vec::new();
-    loop {
-        let mut handles = [0isize; 64];
-        let returned = win::next_batch(&result_set, &mut handles)?;
-        if returned == 0 {
-            return Ok(total);
-        }
-        for &raw in handles.iter().take(returned as usize) {
-            if let Some(xml) = win::render_xml(raw, &mut render_buf) {
-                if let Some(ev) = parse_event_xml(&xml) {
-                    total += 1;
-                    on_event(ev);
-                }
-            }
-        }
-    }
+    drain_query(&result_set, on_event)
 }
 
 #[cfg(not(windows))]
 pub fn query_events_from_file(
     _path: &std::path::Path,
     _on_event: impl FnMut(EventRecord),
-) -> Result<u64> {
+) -> Result<SkippedCount> {
     bail!("event log query is only available on Windows")
+}
+
+/// Pull every matched event from an open result set, delivering the parsed
+/// ones to `on_event` and counting the ones that couldn't be parsed.
+#[cfg(windows)]
+fn drain_query(
+    result_set: &win::Handle,
+    mut on_event: impl FnMut(EventRecord),
+) -> Result<SkippedCount> {
+    let mut skipped: SkippedCount = 0;
+    let mut render_buf: Vec<u16> = Vec::new();
+    loop {
+        let mut handles = [0isize; 64];
+        let returned = win::next_batch(result_set, &mut handles)?;
+        if returned == 0 {
+            return Ok(skipped);
+        }
+        for &raw in handles.iter().take(returned as usize) {
+            match win::render_xml(raw, &mut render_buf).as_deref().and_then(parse_event_xml) {
+                Some(ev) => on_event(ev),
+                // matched the 5156/5157 filter but unparseable — count it so
+                // the caller can report it rather than lose it invisibly
+                None => skipped += 1,
+            }
+        }
+    }
 }
 
 /// Raw rendered XML of the most recent `limit` 5156/5157 events (newest
