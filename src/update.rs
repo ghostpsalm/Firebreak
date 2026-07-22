@@ -28,10 +28,12 @@ pub fn signature_url() -> String {
 }
 
 /// Base64 minisign public key that release assets are signed with — the key
-/// line from `minisign.pub`. Empty until release signing is provisioned;
-/// while empty, `download_and_install` refuses to run, so an unverified
-/// binary is never installed with this tool's elevated privileges (issue #2).
-pub const TRUSTED_PUBLIC_KEY: &str = "";
+/// line (second line) of `signing/firebreak.pub`. Its private counterpart
+/// lives git-ignored under `signing/` and signs `firebreak.exe.minisig` for
+/// each release. Empty here would make `download_and_install` refuse to run
+/// (fail closed), so an unverified binary is never installed with this tool's
+/// elevated privileges (issue #2).
+pub const TRUSTED_PUBLIC_KEY: &str = "RWQqalkBegJ2f0SS5E5JvOJX6WnuZfhaCKYiSdOrmugiiZoufxFMTplC";
 
 /// Whether this build can verify an update (a signing key is pinned).
 pub fn signing_configured() -> bool {
@@ -260,9 +262,14 @@ mod tests {
     }
 
     #[test]
-    fn install_fails_closed_without_a_signing_key() {
-        // until a real key is pinned, self-install must stay disabled so an
-        // unverified elevated binary is never written into place (issue #2)
-        assert!(!signing_configured());
+    fn pinned_public_key_is_configured_and_valid() {
+        // a signing key is pinned (self-update is verified, not fail-closed)…
+        assert!(signing_configured());
+        // …and it is a well-formed minisign key the verifier can load, so a
+        // typo'd pin fails the build's tests rather than at update time
+        assert!(
+            minisign_verify::PublicKey::from_base64(TRUSTED_PUBLIC_KEY).is_ok(),
+            "pinned TRUSTED_PUBLIC_KEY is not a valid minisign public key"
+        );
     }
 }
