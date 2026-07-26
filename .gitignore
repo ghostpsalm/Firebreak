@@ -1,5 +1,8 @@
 /target
+# code-review reports (code-review, deep/repo review skills) stay local
 CODE_REVIEW_*.md
+DEEP_CODE_REVIEW_*.md
+REPO_CODE_REVIEW_*.md
 /docs/
 # local release-signing material — the secret key must never be committed
 /signing/
