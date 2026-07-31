@@ -6,3 +6,4 @@ REPO_CODE_REVIEW_*.md
 /docs/
 # local release-signing material — the secret key must never be committed
 /signing/
+factory/CHECKPOINT.md
