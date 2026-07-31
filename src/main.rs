@@ -67,7 +67,11 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                 // `--collect --enable-only` must leave --enable-only for the
                 // loop, not silently swallow it.
                 let path = it.peek().filter(|p| !p.starts_with("--")).is_some();
-                args.collect = Some(if path { it.next().map(Into::into) } else { None });
+                args.collect = Some(if path {
+                    it.next().map(Into::into)
+                } else {
+                    None
+                });
             }
             "--no-ui" => args.no_ui = true,
             "--dump-filters" => args.dump_filters = true,
@@ -189,7 +193,9 @@ fn main() -> Result<()> {
     }
     if args.reset {
         pipeline::reset(&args.db_path)?;
-        println!("Cleared usage data and checkpoint. The next run re-scans the whole Security log.");
+        println!(
+            "Cleared usage data and checkpoint. The next run re-scans the whole Security log."
+        );
         return Ok(());
     }
     if args.enable_only {
@@ -289,7 +295,10 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     sorted.sort_by_key(|r| r.total_hits());
 
     println!("\n=== Zero-hit enabled rules (disable candidates) ===");
-    for r in sorted.iter().filter(|r| r.rule.is_enabled() && r.total_hits() == 0) {
+    for r in sorted
+        .iter()
+        .filter(|r| r.rule.is_enabled() && r.total_hits() == 0)
+    {
         println!(
             "  {} [{}] {} {} — scope: {}",
             r.rule.display_name,
@@ -302,7 +311,11 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
 
     println!("\n=== Used rules (most hits first) ===");
     for r in sorted.iter().rev() {
-        if let Some(u) = r.usage.as_ref().filter(|u| u.allow_count + u.block_count > 0) {
+        if let Some(u) = r
+            .usage
+            .as_ref()
+            .filter(|u| u.allow_count + u.block_count > 0)
+        {
             println!(
                 "  {:>8} allow / {:>6} block  {}  last {}  apps: {}{}",
                 u.allow_count,
@@ -320,7 +333,10 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     }
 
     println!("\n=== Baseline flags ===");
-    for r in rows.iter().filter(|r| !r.flags.is_empty() && r.rule.is_enabled()) {
+    for r in rows
+        .iter()
+        .filter(|r| !r.flags.is_empty() && r.rule.is_enabled())
+    {
         for f in &r.flags {
             println!("  [{}] {} — {}", f.title, r.rule.display_name, f.advice);
         }
@@ -358,7 +374,11 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
                 "  {:<4} {:>21}  {} (pid {})",
                 l.proto,
                 format!("{}:{}", l.local_address, l.local_port),
-                if l.process_name.is_empty() { "?" } else { &l.process_name },
+                if l.process_name.is_empty() {
+                    "?"
+                } else {
+                    &l.process_name
+                },
                 l.pid
             );
         }

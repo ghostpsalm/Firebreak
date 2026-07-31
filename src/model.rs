@@ -194,7 +194,11 @@ impl ProfileSet {
     pub fn from_rule(r: &RuleInfo) -> ProfileSet {
         let tags = r.profile_tags();
         if tags == ["Any"] {
-            ProfileSet { domain: true, private: true, public: true }
+            ProfileSet {
+                domain: true,
+                private: true,
+                public: true,
+            }
         } else {
             ProfileSet {
                 domain: tags.contains(&"Domain"),
@@ -214,7 +218,7 @@ impl ProfileSet {
 
     /// The `-Profile` argument for Set-NetFirewallRule; None when empty
     /// (caller should disable the rule instead).
-    pub fn to_profile_arg(&self) -> Option<String> {
+    pub fn to_profile_arg(self) -> Option<String> {
         if self.is_empty() {
             return None;
         }
@@ -222,9 +226,15 @@ impl ProfileSet {
             return Some("Any".into());
         }
         let mut v = Vec::new();
-        if self.domain { v.push("Domain"); }
-        if self.private { v.push("Private"); }
-        if self.public { v.push("Public"); }
+        if self.domain {
+            v.push("Domain");
+        }
+        if self.private {
+            v.push("Private");
+        }
+        if self.public {
+            v.push("Public");
+        }
         Some(v.join(","))
     }
 }

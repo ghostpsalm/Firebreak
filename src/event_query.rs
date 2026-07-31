@@ -30,8 +30,8 @@ mod win {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_NO_MORE_ITEMS;
     use windows::Win32::System::EventLog::{
-        EvtClose, EvtNext, EvtQuery, EvtRender, EvtQueryChannelPath, EvtQueryForwardDirection,
-        EvtQueryReverseDirection, EvtRenderEventXml, EVT_HANDLE,
+        EvtClose, EvtNext, EvtQuery, EvtQueryChannelPath, EvtQueryForwardDirection,
+        EvtQueryReverseDirection, EvtRender, EvtRenderEventXml, EVT_HANDLE,
     };
 
     fn to_wide(s: &str) -> Vec<u16> {
@@ -49,22 +49,27 @@ mod win {
     }
 
     pub fn open_query(channel: &str, xpath: &str, forward: bool) -> Result<Handle> {
-        open_query_flagged(channel, xpath, forward, EvtQueryChannelPath.0 as u32)
+        open_query_flagged(channel, xpath, forward, EvtQueryChannelPath.0)
     }
 
     /// Open a query against a saved .evtx file rather than a live channel.
     pub fn open_query_file(path: &str, xpath: &str) -> Result<Handle> {
         use windows::Win32::System::EventLog::EvtQueryFilePath;
-        open_query_flagged(path, xpath, true, EvtQueryFilePath.0 as u32)
+        open_query_flagged(path, xpath, true, EvtQueryFilePath.0)
     }
 
-    fn open_query_flagged(source: &str, xpath: &str, forward: bool, source_flag: u32) -> Result<Handle> {
+    fn open_query_flagged(
+        source: &str,
+        xpath: &str,
+        forward: bool,
+        source_flag: u32,
+    ) -> Result<Handle> {
         let source = to_wide(source);
         let query = to_wide(xpath);
         let direction = if forward {
-            EvtQueryForwardDirection.0 as u32
+            EvtQueryForwardDirection.0
         } else {
-            EvtQueryReverseDirection.0 as u32
+            EvtQueryReverseDirection.0
         };
         unsafe {
             let h = EvtQuery(
@@ -73,7 +78,9 @@ mod win {
                 PCWSTR(query.as_ptr()),
                 source_flag | direction,
             )
-            .context("EvtQuery failed (needs elevation / Event Log Readers, or a readable .evtx)")?;
+            .context(
+                "EvtQuery failed (needs elevation / Event Log Readers, or a readable .evtx)",
+            )?;
             Ok(Handle(h))
         }
     }
@@ -102,7 +109,7 @@ mod win {
             let _ = EvtRender(
                 None,
                 h.0,
-                EvtRenderEventXml.0 as u32,
+                EvtRenderEventXml.0,
                 0,
                 None,
                 &mut used,
@@ -111,12 +118,12 @@ mod win {
             if used == 0 {
                 return None;
             }
-            buf.resize((used as usize + 1) / 2 + 1, 0);
+            buf.resize((used as usize).div_ceil(2) + 1, 0);
             let cap_bytes = (buf.len() * 2) as u32;
             EvtRender(
                 None,
                 h.0,
-                EvtRenderEventXml.0 as u32,
+                EvtRenderEventXml.0,
                 cap_bytes,
                 Some(buf.as_mut_ptr() as *mut _),
                 &mut used,
@@ -189,7 +196,10 @@ fn drain_query(
             return Ok(skipped);
         }
         for &raw in handles.iter().take(returned as usize) {
-            match win::render_xml(raw, &mut render_buf).as_deref().and_then(parse_event_xml) {
+            match win::render_xml(raw, &mut render_buf)
+                .as_deref()
+                .and_then(parse_event_xml)
+            {
                 Some(ev) => on_event(ev),
                 // matched the 5156/5157 filter but unparseable — count it so
                 // the caller can report it rather than lose it invisibly
@@ -242,7 +252,6 @@ fn first_xml(channel: &str, xpath: &str, forward: bool) -> Result<Option<String>
     let mut buf = Vec::new();
     Ok(win::render_xml(handles[0], &mut buf))
 }
-
 
 /// Timestamp of the oldest surviving 5156/5157 event (used as the adopted
 /// collection start when auditing predates this tool). None if no such
@@ -340,8 +349,7 @@ pub fn parse_event_xml(xml: &str) -> Option<EventRecord> {
                     "TimeCreated" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"SystemTime" {
-                                time_created =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                time_created = String::from_utf8_lossy(&attr.value).to_string();
                             }
                         }
                     }
@@ -464,7 +472,10 @@ mod tests {
             "<Data Name='FilterRTID'>67321</Data><Data Name='FilterOrigin'>{aaaa-bbbb}</Data>",
         );
         assert_eq!(
-            parse_event_xml(&with_origin).unwrap().filter_origin.as_deref(),
+            parse_event_xml(&with_origin)
+                .unwrap()
+                .filter_origin
+                .as_deref(),
             Some("{aaaa-bbbb}")
         );
         let dash = SAMPLE.replace(

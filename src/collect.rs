@@ -72,11 +72,15 @@ pub fn collect(out_zip: &Path, progress: &dyn Fn(&str)) -> Result<()> {
     progress("Reading interface profiles…");
     let profiles = crate::firewall_rules::interface_profile_map();
     let ctx = BundleContext {
-        iface_profiles: profiles.iter().map(|(k, v)| (k.to_string(), v.label().to_string())).collect(),
+        iface_profiles: profiles
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.label().to_string()))
+            .collect(),
     };
 
     progress("Exporting filtered Security events (this can take a while)…");
-    let tmp_evtx = std::env::temp_dir().join(format!("firebreak-collect-{}.evtx", std::process::id()));
+    let tmp_evtx =
+        std::env::temp_dir().join(format!("firebreak-collect-{}.evtx", std::process::id()));
     let _ = std::fs::remove_file(&tmp_evtx); // wevtutil refuses to overwrite
     let out = crate::syspath::command(crate::syspath::system32_tool("wevtutil.exe"))
         .args([
@@ -127,12 +131,12 @@ pub fn collect(out_zip: &Path, progress: &dyn Fn(&str)) -> Result<()> {
 /// Open a bundle: parse manifest/rules/context, extract events.evtx to a
 /// temp file for the event API.
 pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
-    let file = std::fs::File::open(zip_path)
-        .with_context(|| format!("opening {}", zip_path.display()))?;
+    let file =
+        std::fs::File::open(zip_path).with_context(|| format!("opening {}", zip_path.display()))?;
     let mut z = zip::ZipArchive::new(file).context("reading bundle zip")?;
 
-    let manifest: Manifest =
-        serde_json::from_str(&read_entry(&mut z, "manifest.json")?).context("parsing manifest.json")?;
+    let manifest: Manifest = serde_json::from_str(&read_entry(&mut z, "manifest.json")?)
+        .context("parsing manifest.json")?;
     if manifest.schema > SCHEMA {
         bail!(
             "bundle schema {} is newer than this build understands ({SCHEMA}) — update Firebreak",
@@ -144,24 +148,35 @@ pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
     if rules.is_empty() {
         bail!("bundle contains no firewall rules");
     }
-    let ctx: BundleContext = serde_json::from_str(&read_entry(&mut z, "context.json").unwrap_or_else(|_| "{}".into()))
-        .unwrap_or_default();
+    let ctx: BundleContext =
+        serde_json::from_str(&read_entry(&mut z, "context.json").unwrap_or_else(|_| "{}".into()))
+            .unwrap_or_default();
     let profiles = ctx
         .iface_profiles
         .iter()
         .filter_map(|(k, v)| Some((k.parse().ok()?, crate::scope::Profile::from_label(v))))
         .collect();
 
-    let events_path = std::env::temp_dir().join(format!("firebreak-import-{}.evtx", std::process::id()));
-    let mut entry = z.by_name("events.evtx").map_err(|_| anyhow!("bundle has no events.evtx"))?;
+    let events_path =
+        std::env::temp_dir().join(format!("firebreak-import-{}.evtx", std::process::id()));
+    let mut entry = z
+        .by_name("events.evtx")
+        .map_err(|_| anyhow!("bundle has no events.evtx"))?;
     let mut out = std::fs::File::create(&events_path).context("extracting events.evtx")?;
     std::io::copy(&mut entry, &mut out)?;
 
-    Ok(Bundle { manifest, rules, profiles, events_path })
+    Ok(Bundle {
+        manifest,
+        rules,
+        profiles,
+        events_path,
+    })
 }
 
 fn read_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
-    let mut e = z.by_name(name).map_err(|_| anyhow!("bundle has no {name}"))?;
+    let mut e = z
+        .by_name(name)
+        .map_err(|_| anyhow!("bundle has no {name}"))?;
     let mut s = String::new();
     e.read_to_string(&mut s)?;
     Ok(s)
@@ -215,11 +230,18 @@ mod tests {
             collector: "exe".into(),
         };
         z.start_file("manifest.json", opt).unwrap();
-        z.write_all(serde_json::to_string(&manifest).unwrap().as_bytes()).unwrap();
+        z.write_all(serde_json::to_string(&manifest).unwrap().as_bytes())
+            .unwrap();
         z.start_file("context.json", opt).unwrap();
-        z.write_all(br#"{"iface_profiles":{"7":"Domain","12":"Public"}}"#).unwrap();
+        z.write_all(br#"{"iface_profiles":{"7":"Domain","12":"Public"}}"#)
+            .unwrap();
         z.start_file("rules.json", opt).unwrap();
-        z.write_all(serde_json::to_string(&vec![fake_rule("r1"), fake_rule("r2")]).unwrap().as_bytes()).unwrap();
+        z.write_all(
+            serde_json::to_string(&vec![fake_rule("r1"), fake_rule("r2")])
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
         z.start_file("events.evtx", opt).unwrap();
         z.write_all(b"ElfFile\0fake").unwrap();
         z.finish().unwrap();

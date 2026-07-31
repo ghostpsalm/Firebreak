@@ -24,7 +24,11 @@ pub fn default_path() -> PathBuf {
     let dir = std::env::var("USERPROFILE")
         .map(|p| Path::new(&p).join("Desktop"))
         .unwrap_or_else(|_| PathBuf::from("."));
-    let base = if dir.exists() { dir } else { PathBuf::from(".") };
+    let base = if dir.exists() {
+        dir
+    } else {
+        PathBuf::from(".")
+    };
     base.join(format!("firebreak-support-{stamp}.txt"))
 }
 
@@ -46,16 +50,31 @@ pub fn export(out_path: &Path) -> Result<()> {
     section!(o, "AUDIT STATE");
     match audit_control::query_audit_state() {
         Ok(s) => {
-            let _ = writeln!(o, "Filtering Platform Connection: success={} failure={} (fully_enabled={})", s.success, s.failure, s.fully_enabled());
+            let _ = writeln!(
+                o,
+                "Filtering Platform Connection: success={} failure={} (fully_enabled={})",
+                s.success,
+                s.failure,
+                s.fully_enabled()
+            );
         }
         Err(e) => {
             let _ = writeln!(o, "query failed: {e:#}");
         }
     }
-    let _ = writeln!(o, "subcategory GUID: {}", audit_control::FILTERING_PLATFORM_CONNECTION_GUID);
+    let _ = writeln!(
+        o,
+        "subcategory GUID: {}",
+        audit_control::FILTERING_PLATFORM_CONNECTION_GUID
+    );
     match audit_control::security_log_max_bytes() {
         Ok(b) => {
-            let _ = writeln!(o, "Security log max size: {} bytes ({} MiB)", b, b / 1024 / 1024);
+            let _ = writeln!(
+                o,
+                "Security log max size: {} bytes ({} MiB)",
+                b,
+                b / 1024 / 1024
+            );
         }
         Err(e) => {
             let _ = writeln!(o, "Security log size query failed: {e:#}");
@@ -64,7 +83,13 @@ pub fn export(out_path: &Path) -> Result<()> {
     // raw auditpol output, for cross-checking the API result
     let _ = writeln!(o, "\n[auditpol /get, verbose]");
     match crate::syspath::command(crate::syspath::system32_tool("auditpol.exe"))
-        .args(["/get", &format!("/subcategory:{}", audit_control::FILTERING_PLATFORM_CONNECTION_GUID)])
+        .args([
+            "/get",
+            &format!(
+                "/subcategory:{}",
+                audit_control::FILTERING_PLATFORM_CONNECTION_GUID
+            ),
+        ])
         .output()
     {
         Ok(out) => {
@@ -102,12 +127,22 @@ pub fn export(out_path: &Path) -> Result<()> {
         }
     };
     let _ = writeln!(o, "filter count: {}", filters.len());
-    let with_pd = filters.iter().filter(|f| !f.provider_data_utf16.is_empty()).count();
+    let with_pd = filters
+        .iter()
+        .filter(|f| !f.provider_data_utf16.is_empty())
+        .count();
     let _ = writeln!(o, "with non-empty providerData(utf16): {with_pd}");
     // filters whose display name looks like it belongs to a firewall rule
-    let rule_display: std::collections::HashSet<&str> = rules.iter().map(|r| r.display_name.as_str()).collect();
-    let named_like_rule = filters.iter().filter(|f| rule_display.contains(f.name.as_str())).count();
-    let _ = writeln!(o, "filters whose name == some rule DisplayName: {named_like_rule}");
+    let rule_display: std::collections::HashSet<&str> =
+        rules.iter().map(|r| r.display_name.as_str()).collect();
+    let named_like_rule = filters
+        .iter()
+        .filter(|f| rule_display.contains(f.name.as_str()))
+        .count();
+    let _ = writeln!(
+        o,
+        "filters whose name == some rule DisplayName: {named_like_rule}"
+    );
     let _ = writeln!(o, "\n[sample filters that carry providerData: filter_id | name | providerData(utf16, trimmed) | providerData(hex, first 64)]");
     let mut shown = 0;
     for f in filters.iter().filter(|f| !f.provider_data_utf16.is_empty()) {
@@ -125,7 +160,10 @@ pub fn export(out_path: &Path) -> Result<()> {
         }
     }
     if shown == 0 {
-        let _ = writeln!(o, "  (no filters carry providerData — that itself is diagnostic)");
+        let _ = writeln!(
+            o,
+            "  (no filters carry providerData — that itself is diagnostic)"
+        );
         let _ = writeln!(o, "\n[sample filters by name instead: filter_id | name]");
         for f in filters.iter().take(15) {
             let _ = writeln!(o, "  {} | {}", f.filter_id, f.name);
@@ -143,19 +181,35 @@ pub fn export(out_path: &Path) -> Result<()> {
             MappedVia::DisplayName => via_name += 1,
         }
     }
-    let _ = writeln!(o, "filters mapped to a rule: {} of {}", rule_map.len(), filters.len());
+    let _ = writeln!(
+        o,
+        "filters mapped to a rule: {} of {}",
+        rule_map.len(),
+        filters.len()
+    );
     let _ = writeln!(o, "  via providerData token: {via_pd}");
     let _ = writeln!(o, "  via display name:       {via_name}");
     if rule_map.is_empty() {
-        let _ = writeln!(o, ">>> ZERO filters mapped to rules — this is why every event is unattributed.");
+        let _ = writeln!(
+            o,
+            ">>> ZERO filters mapped to rules — this is why every event is unattributed."
+        );
     }
 
     // ---- events + per-event attribution test ----
     section!(o, "RECENT 5156/5157 EVENTS — attribution probe");
-    let by_name_ci: HashMap<String, &str> = rules.iter().map(|r| (r.name.to_lowercase(), r.name.as_str())).collect();
-    let by_display_ci: HashMap<String, &str> = rules.iter().map(|r| (r.display_name.to_lowercase(), r.name.as_str())).collect();
-    let live_filter_ids: std::collections::HashSet<u64> = filters.iter().map(|f| f.filter_id).collect();
-    let filter_by_id: HashMap<u64, &crate::model::FilterInfo> = filters.iter().map(|f| (f.filter_id, f)).collect();
+    let by_name_ci: HashMap<String, &str> = rules
+        .iter()
+        .map(|r| (r.name.to_lowercase(), r.name.as_str()))
+        .collect();
+    let by_display_ci: HashMap<String, &str> = rules
+        .iter()
+        .map(|r| (r.display_name.to_lowercase(), r.name.as_str()))
+        .collect();
+    let live_filter_ids: std::collections::HashSet<u64> =
+        filters.iter().map(|f| f.filter_id).collect();
+    let filter_by_id: HashMap<u64, &crate::model::FilterInfo> =
+        filters.iter().map(|f| (f.filter_id, f)).collect();
 
     match event_query::recent_event_xml(25) {
         Ok(xmls) => {
@@ -176,7 +230,11 @@ pub fn export(out_path: &Path) -> Result<()> {
                     let lo = origin.to_lowercase();
                     let by_name = by_name_ci.get(&lo).copied();
                     let by_disp = by_display_ci.get(&lo).copied();
-                    let _ = writeln!(o, "  [H1] FilterOrigin matches rule by Name={:?} by DisplayName={:?}", by_name, by_disp);
+                    let _ = writeln!(
+                        o,
+                        "  [H1] FilterOrigin matches rule by Name={:?} by DisplayName={:?}",
+                        by_name, by_disp
+                    );
                 } else {
                     let _ = writeln!(o, "  [H1] no FilterOrigin field present");
                 }
@@ -185,14 +243,33 @@ pub fn export(out_path: &Path) -> Result<()> {
                 if live_filter_ids.contains(&ev.filter_rtid) {
                     let f = filter_by_id[&ev.filter_rtid];
                     let mapped = rule_map.get(&ev.filter_rtid);
-                    let _ = writeln!(o, "  [H2] RTID found in live filters: name={:?} providerData(utf16)={:?}", f.name, truncate(&f.provider_data_utf16, 100));
-                    let _ = writeln!(o, "       providerData(hex, first 96): {}", f.provider_data_hex.chars().take(96).collect::<String>());
+                    let _ = writeln!(
+                        o,
+                        "  [H2] RTID found in live filters: name={:?} providerData(utf16)={:?}",
+                        f.name,
+                        truncate(&f.provider_data_utf16, 100)
+                    );
+                    let _ = writeln!(
+                        o,
+                        "       providerData(hex, first 96): {}",
+                        f.provider_data_hex.chars().take(96).collect::<String>()
+                    );
                     let toks = filter_map::candidate_tokens(&f.provider_data_utf16);
-                    let _ = writeln!(o, "       candidate tokens from providerData: {:?}", toks.iter().take(8).collect::<Vec<_>>());
-                    let tok_hit = toks.iter().any(|tk| by_name_ci.contains_key(&tk.to_lowercase()));
+                    let _ = writeln!(
+                        o,
+                        "       candidate tokens from providerData: {:?}",
+                        toks.iter().take(8).collect::<Vec<_>>()
+                    );
+                    let tok_hit = toks
+                        .iter()
+                        .any(|tk| by_name_ci.contains_key(&tk.to_lowercase()));
                     let name_hit = by_display_ci.contains_key(&f.name.to_lowercase());
                     let _ = writeln!(o, "       token matches a rule Name: {tok_hit} · filter name matches a rule DisplayName: {name_hit}");
-                    let _ = writeln!(o, "       => current map result: {:?}", mapped.map(|(id, via)| (id.as_str(), via.as_str())));
+                    let _ = writeln!(
+                        o,
+                        "       => current map result: {:?}",
+                        mapped.map(|(id, via)| (id.as_str(), via.as_str()))
+                    );
                 } else {
                     let _ = writeln!(o, "  [H2] RTID NOT in live filter table (different boot session, or filter gone)");
                 }
@@ -205,7 +282,10 @@ pub fn export(out_path: &Path) -> Result<()> {
     }
 
     // ---- raw event XML (2 samples, verbatim) ----
-    section!(o, "RAW EVENT XML (2 verbatim samples — shows exact field names)");
+    section!(
+        o,
+        "RAW EVENT XML (2 verbatim samples — shows exact field names)"
+    );
     match event_query::recent_event_xml(2) {
         Ok(xmls) => {
             for (i, xml) in xmls.iter().enumerate() {

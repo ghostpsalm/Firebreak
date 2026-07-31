@@ -62,11 +62,7 @@ pub fn identify(path: &str) -> AppIdentity {
 
     fn fallback(path: &str) -> AppIdentity {
         AppIdentity {
-            friendly_name: path
-                .rsplit(['\\', '/'])
-                .next()
-                .unwrap_or(path)
-                .to_string(),
+            friendly_name: path.rsplit(['\\', '/']).next().unwrap_or(path).to_string(),
             company: String::new(),
         }
     }
@@ -102,13 +98,8 @@ pub fn identify(path: &str) -> AppIdentity {
             return fallback(path);
         }
         let mut block = vec![0u8; size as usize];
-        if GetFileVersionInfoW(
-            PCWSTR(wide.as_ptr()),
-            0,
-            size,
-            block.as_mut_ptr() as *mut _,
-        )
-        .is_err()
+        if GetFileVersionInfoW(PCWSTR(wide.as_ptr()), 0, size, block.as_mut_ptr() as *mut _)
+            .is_err()
         {
             return fallback(path);
         }
@@ -135,7 +126,10 @@ pub fn identify(path: &str) -> AppIdentity {
             lang_cp = format!("{:04X}{:04X}", pair[0], pair[1]);
         }
 
-        let desc = query_string(&block, &format!("\\StringFileInfo\\{lang_cp}\\FileDescription"));
+        let desc = query_string(
+            &block,
+            &format!("\\StringFileInfo\\{lang_cp}\\FileDescription"),
+        );
         let product = query_string(&block, &format!("\\StringFileInfo\\{lang_cp}\\ProductName"));
         let company = query_string(&block, &format!("\\StringFileInfo\\{lang_cp}\\CompanyName"));
 
@@ -152,11 +146,7 @@ pub fn identify(path: &str) -> AppIdentity {
 #[cfg(not(windows))]
 pub fn identify(path: &str) -> AppIdentity {
     AppIdentity {
-        friendly_name: path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or(path)
-            .to_string(),
+        friendly_name: path.rsplit(['\\', '/']).next().unwrap_or(path).to_string(),
         company: String::new(),
     }
 }
@@ -172,7 +162,10 @@ mod tests {
     #[test]
     fn normalizes_known_device_prefix() {
         assert_eq!(
-            normalize_path(r"\device\harddiskvolume3\Windows\System32\svchost.exe", &map()),
+            normalize_path(
+                r"\device\harddiskvolume3\Windows\System32\svchost.exe",
+                &map()
+            ),
             r"C:\Windows\System32\svchost.exe"
         );
     }

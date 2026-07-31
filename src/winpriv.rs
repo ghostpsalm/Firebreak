@@ -29,7 +29,10 @@ pub fn enable_privilege(name: windows::core::PCWSTR) -> Result<()> {
         let lookup = LookupPrivilegeValueW(windows::core::PCWSTR::null(), name, &mut luid);
         if lookup.is_err() {
             let _ = CloseHandle(token);
-            bail!("LookupPrivilegeValueW failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "LookupPrivilegeValueW failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
 
         let tp = TOKEN_PRIVILEGES {

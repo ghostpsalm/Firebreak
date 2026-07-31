@@ -113,11 +113,7 @@ fn decode_provider_data(data: &[u8]) -> (String, String) {
         .chars()
         .filter(|c| !c.is_control())
         .collect();
-    let hex: String = data
-        .iter()
-        .take(256)
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let hex: String = data.iter().take(256).map(|b| format!("{b:02x}")).collect();
     (text, hex)
 }
 
@@ -281,7 +277,10 @@ mod tests {
 
     #[test]
     fn provider_data_matches_by_exact_token() {
-        let rules = vec![rule("CoreNet-DNS-Out", "DNS out"), rule("{guid-1}", "Other")];
+        let rules = vec![
+            rule("CoreNet-DNS-Out", "DNS out"),
+            rule("{guid-1}", "Other"),
+        ];
         let filters = vec![filter(10, "irrelevant", "x|CoreNet-DNS-Out|y")];
         let map = build_filter_rule_map(&filters, &rules);
         assert_eq!(map[&10].0, "CoreNet-DNS-Out");
@@ -306,7 +305,10 @@ mod tests {
         ];
         let filters = vec![filter(20, "Shared Name", ""), filter(21, "Unique Name", "")];
         let map = build_filter_rule_map(&filters, &rules);
-        assert!(!map.contains_key(&20), "ambiguous display name must not match");
+        assert!(
+            !map.contains_key(&20),
+            "ambiguous display name must not match"
+        );
         assert_eq!(map[&21].0, "{id-3}");
         assert_eq!(map[&21].1, MappedVia::DisplayName);
     }

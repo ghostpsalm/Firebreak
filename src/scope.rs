@@ -224,7 +224,10 @@ impl Conn {
             local_port,
             remote_port,
             app_base: basename(normalized_app).to_lowercase(),
-            profile: profiles.get(&ev.interface_index).copied().unwrap_or(Profile::Unknown),
+            profile: profiles
+                .get(&ev.interface_index)
+                .copied()
+                .unwrap_or(Profile::Unknown),
         }
     }
 }
@@ -259,7 +262,11 @@ impl ScopeIndex {
                 scopes.push(s);
             }
         }
-        ScopeIndex { scopes, by_proto, any_proto }
+        ScopeIndex {
+            scopes,
+            by_proto,
+            any_proto,
+        }
     }
 
     /// Names of all rules whose scope this connection matches.
@@ -285,7 +292,14 @@ impl ScopeIndex {
 mod tests {
     use super::*;
 
-    fn rule(name: &str, dir: &str, proto: Option<&str>, lport: Option<&str>, rport: Option<&str>, prog: Option<&str>) -> RuleInfo {
+    fn rule(
+        name: &str,
+        dir: &str,
+        proto: Option<&str>,
+        lport: Option<&str>,
+        rport: Option<&str>,
+        prog: Option<&str>,
+    ) -> RuleInfo {
         RuleInfo {
             name: name.into(),
             display_name: name.into(),
@@ -345,7 +359,10 @@ mod tests {
         // connection — regression for the 30-identical-rows bug
         let rules = vec![rule("Windows Camera", "Inbound", None, None, None, None)];
         let idx = ScopeIndex::build(&rules);
-        let c = conn(&ev("Inbound", 6, "40000", "443", "chrome.exe"), "chrome.exe");
+        let c = conn(
+            &ev("Inbound", 6, "40000", "443", "chrome.exe"),
+            "chrome.exe",
+        );
         assert!(idx.matching_rules(&c).is_empty());
     }
 
@@ -356,7 +373,10 @@ mod tests {
         let mut r = rule("Old RDP", "Inbound", Some("TCP"), Some("3389"), None, None);
         r.enabled = "False".into();
         let idx = ScopeIndex::build(&[r]);
-        let c = conn(&ev("Inbound", 6, "40000", "3389", "svchost.exe"), "svchost.exe");
+        let c = conn(
+            &ev("Inbound", 6, "40000", "3389", "svchost.exe"),
+            "svchost.exe",
+        );
         assert!(idx.matching_rules(&c).is_empty());
         // the same rule, enabled, does match — proving exclusion is the state,
         // not the scope
@@ -368,7 +388,14 @@ mod tests {
 
     #[test]
     fn icmp_ping_credits_protocol_only_rule() {
-        let rules = vec![rule("Echo Request v4", "Inbound", Some("ICMPv4"), None, None, None)];
+        let rules = vec![rule(
+            "Echo Request v4",
+            "Inbound",
+            Some("ICMPv4"),
+            None,
+            None,
+            None,
+        )];
         let idx = ScopeIndex::build(&rules);
         let c = conn(&ev("Inbound", 1, "0", "0", "System"), "System");
         assert_eq!(idx.matching_rules(&c), vec!["Echo Request v4"]);
@@ -376,25 +403,55 @@ mod tests {
 
     #[test]
     fn program_and_port_both_required() {
-        let rules = vec![rule("svc5000", "Inbound", Some("TCP"), Some("5000-5020"), None, Some(r"C:\x\svchost.exe"))];
+        let rules = vec![rule(
+            "svc5000",
+            "Inbound",
+            Some("TCP"),
+            Some("5000-5020"),
+            None,
+            Some(r"C:\x\svchost.exe"),
+        )];
         let idx = ScopeIndex::build(&rules);
-        let miss = conn(&ev("Inbound", 6, "40000", "135", "svchost.exe"), r"C:\x\svchost.exe");
+        let miss = conn(
+            &ev("Inbound", 6, "40000", "135", "svchost.exe"),
+            r"C:\x\svchost.exe",
+        );
         assert!(idx.matching_rules(&miss).is_empty());
-        let hit = conn(&ev("Inbound", 6, "40000", "5010", "svchost.exe"), r"C:\x\svchost.exe");
+        let hit = conn(
+            &ev("Inbound", 6, "40000", "5010", "svchost.exe"),
+            r"C:\x\svchost.exe",
+        );
         assert_eq!(idx.matching_rules(&hit), vec!["svc5000"]);
     }
 
     #[test]
     fn outbound_matches_on_remote_port() {
-        let rules = vec![rule("DNS out", "Outbound", Some("UDP"), None, Some("53"), None)];
+        let rules = vec![rule(
+            "DNS out",
+            "Outbound",
+            Some("UDP"),
+            None,
+            Some("53"),
+            None,
+        )];
         let idx = ScopeIndex::build(&rules);
-        let c = conn(&ev("Outbound", 17, "50000", "53", "svchost.exe"), "svchost.exe");
+        let c = conn(
+            &ev("Outbound", 17, "50000", "53", "svchost.exe"),
+            "svchost.exe",
+        );
         assert_eq!(idx.matching_rules(&c), vec!["DNS out"]);
     }
 
     #[test]
     fn profile_gate_excludes_wrong_profile() {
-        let mut r = rule("RDP Domain", "Inbound", Some("TCP"), Some("3389"), None, None);
+        let mut r = rule(
+            "RDP Domain",
+            "Inbound",
+            Some("TCP"),
+            Some("3389"),
+            None,
+            None,
+        );
         r.profile = "Domain".into();
         let idx = ScopeIndex::build(&[r]);
         let mut e = ev("Inbound", 6, "40000", "3389", "svchost.exe");
@@ -411,11 +468,24 @@ mod tests {
 
     #[test]
     fn direction_and_protocol_gate() {
-        let rules = vec![rule("mDNS in", "Inbound", Some("UDP"), Some("5353"), None, None)];
+        let rules = vec![rule(
+            "mDNS in",
+            "Inbound",
+            Some("UDP"),
+            Some("5353"),
+            None,
+            None,
+        )];
         let idx = ScopeIndex::build(&rules);
-        let c = conn(&ev("Outbound", 17, "5353", "5353", "svchost.exe"), "svchost.exe");
+        let c = conn(
+            &ev("Outbound", 17, "5353", "5353", "svchost.exe"),
+            "svchost.exe",
+        );
         assert!(idx.matching_rules(&c).is_empty());
-        let c2 = conn(&ev("Inbound", 6, "5353", "5353", "svchost.exe"), "svchost.exe");
+        let c2 = conn(
+            &ev("Inbound", 6, "5353", "5353", "svchost.exe"),
+            "svchost.exe",
+        );
         assert!(idx.matching_rules(&c2).is_empty());
     }
 }

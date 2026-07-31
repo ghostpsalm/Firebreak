@@ -54,7 +54,13 @@ pub fn relaunch_elevated() -> bool {
     let exe_w = to_wide(&exe.to_string_lossy());
     let args = std::env::args()
         .skip(1)
-        .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a })
+        .map(|a| {
+            if a.contains(' ') {
+                format!("\"{a}\"")
+            } else {
+                a
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ");
     let args_w = to_wide(&args);

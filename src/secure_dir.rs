@@ -23,8 +23,8 @@ pub fn ensure_secured_dir(path: &Path) -> Result<()> {
         SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        IsWellKnownSid, WinBuiltinAdministratorsSid, WinLocalSystemSid,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+        IsWellKnownSid, WinBuiltinAdministratorsSid, WinLocalSystemSid, OWNER_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
     };
     use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 

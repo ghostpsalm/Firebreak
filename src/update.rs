@@ -59,7 +59,11 @@ pub fn check() -> Result<Release> {
     let latest = normalize(&tag);
     let current = crate::pipeline::version_string();
     let newer = is_newer(&latest, &current);
-    Ok(Release { latest, current, newer })
+    Ok(Release {
+        latest,
+        current,
+        newer,
+    })
 }
 
 /// The newest release tag. WinHTTP first (no subprocess); PowerShell fallback.
@@ -70,7 +74,11 @@ fn latest_tag() -> Result<String> {
         Ok(body) => {
             let json: serde_json::Value =
                 serde_json::from_slice(&body).context("parsing releases/latest JSON")?;
-            Ok(json.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").to_string())
+            Ok(json
+                .get("tag_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string())
         }
         Err(e) => {
             eprintln!("WinHTTP update check failed ({e:#}); falling back to PowerShell");
@@ -115,13 +123,18 @@ fn latest_tag_subprocess(api: &str) -> Result<String> {
 /// signature-mismatched artifact is refused (fail closed).
 pub fn download_and_install() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("locating the running exe")?;
-    let dir = exe.parent().ok_or_else(|| anyhow!("running exe has no parent directory"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow!("running exe has no parent directory"))?;
     let new = dir.join(format!("{ASSET}.new"));
     let old = dir.join(format!("{ASSET}.old"));
 
     let bytes = fetch(&download_url()).context("downloading the update")?;
     if bytes.len() < 1024 {
-        return Err(anyhow!("the downloaded file looks incomplete ({} bytes)", bytes.len()));
+        return Err(anyhow!(
+            "the downloaded file looks incomplete ({} bytes)",
+            bytes.len()
+        ));
     }
     // authenticity gate: this binary runs elevated, so never install code we
     // can't verify came from the holder of the pinned signing key
@@ -175,7 +188,8 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
         Ok(bytes) => Ok(bytes),
         Err(e) => {
             eprintln!("WinHTTP fetch failed ({e:#}); falling back to PowerShell");
-            let dest = std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
+            let dest =
+                std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
             let _ = std::fs::remove_file(&dest);
             let script = format!(
                 "$ErrorActionPreference='Stop'; \
@@ -189,9 +203,13 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
                 .context("launching PowerShell for the download")?;
             if !out.status.success() {
                 let _ = std::fs::remove_file(&dest);
-                return Err(anyhow!("download failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+                return Err(anyhow!(
+                    "download failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
             }
-            let bytes = std::fs::read(&dest).with_context(|| format!("reading {}", dest.display()))?;
+            let bytes =
+                std::fs::read(&dest).with_context(|| format!("reading {}", dest.display()))?;
             let _ = std::fs::remove_file(&dest);
             Ok(bytes)
         }
@@ -225,7 +243,11 @@ fn normalize(tag: &str) -> String {
 
 /// Numeric dotted-version comparison; missing trailing components count as 0.
 fn is_newer(latest: &str, current: &str) -> bool {
-    let parse = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let parse = |s: &str| {
+        s.split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
     let (a, b) = (parse(latest), parse(current));
     for i in 0..a.len().max(b.len()) {
         let x = a.get(i).copied().unwrap_or(0);

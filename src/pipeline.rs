@@ -91,13 +91,22 @@ pub fn reset(db_path: &Path) -> Result<()> {
 /// first changed them. Returns a human-readable summary.
 pub fn restore_audit_state(store: &Store) -> Result<String> {
     let mut msg = String::new();
-    match (store.get_meta("prior_audit_success")?, store.get_meta("prior_audit_failure")?) {
+    match (
+        store.get_meta("prior_audit_success")?,
+        store.get_meta("prior_audit_failure")?,
+    ) {
         (Some(s), Some(f)) => {
-            let state = audit_control::AuditState { success: s == "true", failure: f == "true" };
+            let state = audit_control::AuditState {
+                success: s == "true",
+                failure: f == "true",
+            };
             audit_control::set_auditing(state)?;
             store.delete_meta("prior_audit_success")?;
             store.delete_meta("prior_audit_failure")?;
-            msg = format!("Audit policy restored (success={}, failure={}).", state.success, state.failure);
+            msg = format!(
+                "Audit policy restored (success={}, failure={}).",
+                state.success, state.failure
+            );
         }
         _ => msg.push_str("No prior audit state recorded — nothing to restore."),
     }
@@ -141,7 +150,11 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
                 .map(|(_, a, b)| format!("{a}/{b}"))
                 .unwrap_or_else(|| "0/0".into())
         };
-        let last = r.usage.as_ref().and_then(|u| u.last_seen.clone()).unwrap_or_default();
+        let last = r
+            .usage
+            .as_ref()
+            .and_then(|u| u.last_seen.clone())
+            .unwrap_or_default();
         let peers = r.usage.as_ref().map(|u| u.distinct_peers).unwrap_or(0);
         let line = [
             cell(&r.rule.name),
@@ -186,13 +199,25 @@ pub fn import_evtx(
         .or_else(firewall_rules::load_rules_cache)
         .context("no firewall rules available to match against")?;
     let iface_profiles = firewall_rules::interface_profile_map();
-    let name = evtx_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let name = evtx_path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let host = format!("imported: {name}");
     let note = format!(
         "Imported events from {name}, matched against THIS host's rules — export a full \
          bundle from the target (Settings → Save collection script) for exact results. Read-only."
     );
-    import_events(scratch_db, evtx_path, rules, iface_profiles, host, note, reset_first, progress)
+    import_events(
+        scratch_db,
+        evtx_path,
+        rules,
+        iface_profiles,
+        host,
+        note,
+        reset_first,
+        progress,
+    )
 }
 
 /// Import a firebreak-export bundle: the target's own rules and interface
@@ -210,9 +235,21 @@ pub fn import_bundle(
         "Reviewing an export from {} (collected {}). Read-only — apply changes on the \
          device itself.",
         b.manifest.hostname,
-        b.manifest.collected_at.get(..10).unwrap_or(&b.manifest.collected_at),
+        b.manifest
+            .collected_at
+            .get(..10)
+            .unwrap_or(&b.manifest.collected_at),
     );
-    let result = import_events(scratch_db, &b.events_path, b.rules, b.profiles, host, note, reset_first, progress);
+    let result = import_events(
+        scratch_db,
+        &b.events_path,
+        b.rules,
+        b.profiles,
+        host,
+        note,
+        reset_first,
+        progress,
+    );
     let _ = std::fs::remove_file(&b.events_path); // temp extraction
     result
 }
@@ -239,7 +276,8 @@ fn import_events(
     store.begin()?;
     let mut events_processed: u64 = 0;
     let mut unmatched_events: u64 = 0;
-    let mut bucket_labels: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut bucket_labels: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     progress("Reading events from file…");
     let ingest = event_query::query_events_from_file(evtx_path, |ev| {
         events_processed += 1;
@@ -252,7 +290,9 @@ fn import_events(
             let origin = ev.filter_origin.as_deref().unwrap_or("Unknown").trim();
             let origin = if origin.is_empty() { "Unknown" } else { origin };
             let bucket = format!("default:{origin}");
-            bucket_labels.entry(bucket.clone()).or_insert_with(|| origin.to_string());
+            bucket_labels
+                .entry(bucket.clone())
+                .or_insert_with(|| origin.to_string());
             let _ = store.record_event(&bucket, &ev, &app, profile);
         } else {
             for rule_name in matched {
@@ -396,7 +436,16 @@ fn build_rows(
                 Some((_, at)) => ui::ReviewState::Stale(at.clone()),
                 None => ui::ReviewState::No,
             };
-            ui::RuleRow { rule, usage, flags, seen_apps, listening, target_enabled, target_profiles, reviewed: review }
+            ui::RuleRow {
+                rule,
+                usage,
+                flags,
+                seen_apps,
+                listening,
+                target_enabled,
+                target_profiles,
+                reviewed: review,
+            }
         })
         .collect()
 }
@@ -408,8 +457,14 @@ fn build_unmatched(store: &Store) -> Result<Vec<UnmatchedRow>> {
         .unmatched_usage()?
         .into_iter()
         .map(|usage| {
-            let origin = usage.rule_id.strip_prefix("default:").unwrap_or(&usage.rule_id);
-            let label = labels.get(&usage.rule_id).cloned().unwrap_or_else(|| origin.to_string());
+            let origin = usage
+                .rule_id
+                .strip_prefix("default:")
+                .unwrap_or(&usage.rule_id);
+            let label = labels
+                .get(&usage.rule_id)
+                .cloned()
+                .unwrap_or_else(|| origin.to_string());
             UnmatchedRow {
                 filter_name: describe_origin(&label),
                 usage,
@@ -538,7 +593,7 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
 
     let ingest = event_query::query_events(checkpoint, |ev| {
         events_processed += 1;
-        if max_record_id.map_or(true, |m| ev.record_id > m) {
+        if max_record_id.is_none_or(|m| ev.record_id > m) {
             max_record_id = Some(ev.record_id);
         }
         let app = app_identity::normalize_path(&ev.application, &device_map);
@@ -552,7 +607,9 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
             let origin = ev.filter_origin.as_deref().unwrap_or("Unknown").trim();
             let origin = if origin.is_empty() { "Unknown" } else { origin };
             let bucket = format!("default:{origin}");
-            bucket_labels.entry(bucket.clone()).or_insert_with(|| origin.to_string());
+            bucket_labels
+                .entry(bucket.clone())
+                .or_insert_with(|| origin.to_string());
             if store.record_event(&bucket, &ev, &app, profile).is_err() {
                 errors += 1;
             }

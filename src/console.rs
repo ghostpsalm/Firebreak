@@ -6,8 +6,7 @@
 pub fn attach_parent_console() {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_WRITE, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_WRITE, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     use windows::Win32::System::Console::{
         AttachConsole, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,

@@ -12,9 +12,9 @@ use anyhow::{anyhow, bail, Result};
 pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Networking::WinHttp::{
-        WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable,
-        WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_FLAG_SECURE,
+        WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+        WinHttpQueryDataAvailable, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
+        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
     };
 
     let (host, path) = split_url(url)?;
@@ -24,7 +24,9 @@ pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
     impl Drop for H {
         fn drop(&mut self) {
             if !self.0.is_null() {
-                unsafe { let _ = WinHttpCloseHandle(self.0); }
+                unsafe {
+                    let _ = WinHttpCloseHandle(self.0);
+                }
             }
         }
     }
@@ -44,7 +46,10 @@ pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
 
         let connect = WinHttpConnect(session, &HSTRING::from(host.as_str()), 443, 0);
         if connect.is_null() {
-            bail!("WinHttpConnect failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "WinHttpConnect failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
         let _connect = H(connect);
 
@@ -58,30 +63,55 @@ pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
             WINHTTP_FLAG_SECURE,
         );
         if request.is_null() {
-            bail!("WinHttpOpenRequest failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "WinHttpOpenRequest failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
         let _request = H(request);
 
         let headers: Vec<u16> = extra_headers.encode_utf16().collect();
-        let headers_opt: Option<&[u16]> = if headers.is_empty() { None } else { Some(&headers) };
-        WinHttpSendRequest(request, headers_opt, None, 0, 0, 0)
-            .map_err(|_| anyhow!("WinHttpSendRequest failed: {}", windows::core::Error::from_win32()))?;
+        let headers_opt: Option<&[u16]> = if headers.is_empty() {
+            None
+        } else {
+            Some(&headers)
+        };
+        WinHttpSendRequest(request, headers_opt, None, 0, 0, 0).map_err(|_| {
+            anyhow!(
+                "WinHttpSendRequest failed: {}",
+                windows::core::Error::from_win32()
+            )
+        })?;
 
-        WinHttpReceiveResponse(request, std::ptr::null_mut())
-            .map_err(|_| anyhow!("WinHttpReceiveResponse failed: {}", windows::core::Error::from_win32()))?;
+        WinHttpReceiveResponse(request, std::ptr::null_mut()).map_err(|_| {
+            anyhow!(
+                "WinHttpReceiveResponse failed: {}",
+                windows::core::Error::from_win32()
+            )
+        })?;
 
         let mut body = Vec::new();
         loop {
             let mut avail = 0u32;
-            WinHttpQueryDataAvailable(request, &mut avail)
-                .map_err(|_| anyhow!("WinHttpQueryDataAvailable failed: {}", windows::core::Error::from_win32()))?;
+            WinHttpQueryDataAvailable(request, &mut avail).map_err(|_| {
+                anyhow!(
+                    "WinHttpQueryDataAvailable failed: {}",
+                    windows::core::Error::from_win32()
+                )
+            })?;
             if avail == 0 {
                 break;
             }
             let mut chunk = vec![0u8; avail as usize];
             let mut read = 0u32;
-            WinHttpReadData(request, chunk.as_mut_ptr() as *mut _, avail, &mut read)
-                .map_err(|_| anyhow!("WinHttpReadData failed: {}", windows::core::Error::from_win32()))?;
+            WinHttpReadData(request, chunk.as_mut_ptr() as *mut _, avail, &mut read).map_err(
+                |_| {
+                    anyhow!(
+                        "WinHttpReadData failed: {}",
+                        windows::core::Error::from_win32()
+                    )
+                },
+            )?;
             chunk.truncate(read as usize);
             body.extend_from_slice(&chunk);
             if read == 0 {

@@ -54,7 +54,10 @@ impl ReviewState {
 
 impl RuleRow {
     pub fn total_hits(&self) -> i64 {
-        self.usage.as_ref().map(|u| u.allow_count + u.block_count).unwrap_or(0)
+        self.usage
+            .as_ref()
+            .map(|u| u.allow_count + u.block_count)
+            .unwrap_or(0)
     }
     fn is_zero_hit(&self) -> bool {
         self.total_hits() == 0
@@ -63,10 +66,12 @@ impl RuleRow {
         crate::model::ProfileSet::from_rule(&self.rule)
     }
     fn pending(&self) -> bool {
-        self.target_enabled != self.rule.is_enabled() || self.target_profiles != self.orig_profiles()
+        self.target_enabled != self.rule.is_enabled()
+            || self.target_profiles != self.orig_profiles()
     }
 }
 
+#[derive(Default)]
 pub struct AuditContext {
     pub hostname: String,
     pub auditing_active: bool,
@@ -75,20 +80,6 @@ pub struct AuditContext {
     pub events_processed: u64,
     pub unmatched_events: u64,
     pub note: String,
-}
-
-impl Default for AuditContext {
-    fn default() -> Self {
-        AuditContext {
-            hostname: String::new(),
-            auditing_active: false,
-            collection_started: None,
-            last_ingest: None,
-            events_processed: 0,
-            unmatched_events: 0,
-            note: String::new(),
-        }
-    }
 }
 
 // ---- workers ----
@@ -130,20 +121,36 @@ pub(crate) enum ChangeKind {
     Disable,
     Enable,
     /// narrow the rule's profile scope; still enabled afterward
-    Profiles { arg: String, was_enabled: bool, removed: String },
+    Profiles {
+        arg: String,
+        // captured for a future revert-to-prior-scope path; not read yet
+        #[allow(dead_code)]
+        was_enabled: bool,
+        removed: String,
+    },
 }
 
 impl PlannedChange {
     fn new(r: &RuleRow, kind: ChangeKind) -> PlannedChange {
-        PlannedChange { name: r.rule.name.clone(), display: r.rule.display_name.clone(), kind }
+        PlannedChange {
+            name: r.rule.name.clone(),
+            display: r.rule.display_name.clone(),
+            kind,
+        }
     }
 }
 
 fn removed_labels(orig: crate::model::ProfileSet, target: crate::model::ProfileSet) -> String {
     let mut removed = Vec::new();
-    if orig.domain && !target.domain { removed.push("Domain"); }
-    if orig.private && !target.private { removed.push("Private"); }
-    if orig.public && !target.public { removed.push("Public"); }
+    if orig.domain && !target.domain {
+        removed.push("Domain");
+    }
+    if orig.private && !target.private {
+        removed.push("Private");
+    }
+    if orig.public && !target.public {
+        removed.push("Public");
+    }
     removed.join(", ")
 }
 
@@ -201,12 +208,21 @@ fn contains_ci(hay: &str, needle: &str) -> bool {
 
 fn rule_text_match(r: &RuleRow, needle: &str) -> bool {
     contains_ci(&r.rule.display_name, needle)
-        || r.rule.group.as_deref().map_or(false, |g| contains_ci(g, needle))
+        || r.rule
+            .group
+            .as_deref()
+            .is_some_and(|g| contains_ci(g, needle))
 }
 
 fn udp_port(r: &RuleRow, port: &str) -> bool {
-    r.rule.protocol.as_deref().map_or(false, |p| p.eq_ignore_ascii_case("udp"))
-        && r.rule.local_port.as_deref().map_or(false, |lp| lp.split(',').any(|p| p == port))
+    r.rule
+        .protocol
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case("udp"))
+        && r.rule
+            .local_port
+            .as_deref()
+            .is_some_and(|lp| lp.split(',').any(|p| p == port))
 }
 
 fn inbound_allow(r: &RuleRow) -> bool {
@@ -306,12 +322,17 @@ impl App {
 
     /// How many catalog actions currently have something to stage.
     pub(crate) fn applicable_action_count(&self) -> usize {
-        actions_catalog().iter().filter(|a| !self.action_pending(a).is_empty()).count()
+        actions_catalog()
+            .iter()
+            .filter(|a| !self.action_pending(a).is_empty())
+            .count()
     }
 }
 
 #[derive(PartialEq, Clone, Copy)]
 pub(crate) enum Sort {
+    // no header wires this up yet; comparator exists for when one does
+    #[allow(dead_code)]
     Enabled,
     Name,
     Dir,
@@ -358,7 +379,17 @@ pub(crate) struct ColWidths {
 
 impl Default for ColWidths {
     fn default() -> Self {
-        ColWidths { name: 0.0, dir: 44.0, action: 54.0, profiles: 118.0, scope: 150.0, hits: 100.0, last: 78.0, listen: 132.0, reviewed: 78.0 }
+        ColWidths {
+            name: 0.0,
+            dir: 44.0,
+            action: 54.0,
+            profiles: 118.0,
+            scope: 150.0,
+            hits: 100.0,
+            last: 78.0,
+            listen: 132.0,
+            reviewed: 78.0,
+        }
     }
 }
 
@@ -541,7 +572,10 @@ impl App {
                 ReviewState::Yes(_) => (ReviewState::No, Some(None)),
                 _ => {
                     let at = chrono::Utc::now().format("%Y-%m-%d").to_string();
-                    (ReviewState::Yes(at.clone()), Some(Some((r.rule.fingerprint(), at))))
+                    (
+                        ReviewState::Yes(at.clone()),
+                        Some(Some((r.rule.fingerprint(), at))),
+                    )
                 }
             }
         };
@@ -831,8 +865,18 @@ impl App {
             }
             // enabled target
             if r.target_profiles != orig {
-                let arg = r.target_profiles.to_profile_arg().unwrap_or_else(|| "Any".into());
-                out.push(PlannedChange::new(r, ChangeKind::Profiles { arg, was_enabled, removed: removed_labels(orig, r.target_profiles) }));
+                let arg = r
+                    .target_profiles
+                    .to_profile_arg()
+                    .unwrap_or_else(|| "Any".into());
+                out.push(PlannedChange::new(
+                    r,
+                    ChangeKind::Profiles {
+                        arg,
+                        was_enabled,
+                        removed: removed_labels(orig, r.target_profiles),
+                    },
+                ));
             } else if !was_enabled {
                 out.push(PlannedChange::new(r, ChangeKind::Enable));
             }
@@ -909,7 +953,9 @@ impl App {
                 }
             }
             for change in plan {
-                let _ = tx.send(ApplyMsg::RuleStart { name: change.name.clone() });
+                let _ = tx.send(ApplyMsg::RuleStart {
+                    name: change.name.clone(),
+                });
                 egui_ctx.request_repaint();
                 let result = match &change.kind {
                     ChangeKind::Disable => firewall_rules::set_rule_enabled(&change.name, false),
@@ -989,10 +1035,10 @@ impl App {
     }
 
     fn apply_running(&self) -> bool {
-        self.apply.as_ref().map_or(false, |a| !a.finished)
+        self.apply.as_ref().is_some_and(|a| !a.finished)
     }
     fn apply_partial_failure(&self) -> bool {
-        self.apply.as_ref().map_or(false, |a| {
+        self.apply.as_ref().is_some_and(|a| {
             a.finished && (a.results.values().any(|r| r.is_err()) || a.backup_failed.is_some())
         })
     }
@@ -1005,8 +1051,12 @@ impl App {
             .filter(|&i| {
                 let r = &self.rows[i];
                 match self.dir_filter {
-                    DirFilter::In if !r.rule.direction.eq_ignore_ascii_case("inbound") => return false,
-                    DirFilter::Out if !r.rule.direction.eq_ignore_ascii_case("outbound") => return false,
+                    DirFilter::In if !r.rule.direction.eq_ignore_ascii_case("inbound") => {
+                        return false
+                    }
+                    DirFilter::Out if !r.rule.direction.eq_ignore_ascii_case("outbound") => {
+                        return false
+                    }
                     _ => {}
                 }
                 if self.only_enabled && !r.rule.is_enabled() {
@@ -1021,39 +1071,69 @@ impl App {
                 if self.hide_reviewed && matches!(r.reviewed, ReviewState::Yes(_)) {
                     return false;
                 }
-                if !r.rule.applies_to_profile(self.show_domain, self.show_private, self.show_public) {
+                if !r
+                    .rule
+                    .applies_to_profile(self.show_domain, self.show_private, self.show_public)
+                {
                     return false;
                 }
                 if needle.is_empty() {
                     return true;
                 }
                 r.rule.display_name.to_lowercase().contains(&needle)
-                    || r.rule.group.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || r.rule.program.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || r.seen_apps.iter().any(|a| a.to_lowercase().contains(&needle))
-                    || r.listening.iter().any(|l| l.to_lowercase().contains(&needle))
+                    || r.rule
+                        .group
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || r.rule
+                        .program
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || r.seen_apps
+                        .iter()
+                        .any(|a| a.to_lowercase().contains(&needle))
+                    || r.listening
+                        .iter()
+                        .any(|l| l.to_lowercase().contains(&needle))
             })
             .collect();
         idx.sort_by(|&a, &b| {
             let (ra, rb) = (&self.rows[a], &self.rows[b]);
             let ord = match self.sort {
                 Sort::Enabled => ra.rule.is_enabled().cmp(&rb.rule.is_enabled()),
-                Sort::Name => ra.rule.display_name.to_lowercase().cmp(&rb.rule.display_name.to_lowercase()),
+                Sort::Name => ra
+                    .rule
+                    .display_name
+                    .to_lowercase()
+                    .cmp(&rb.rule.display_name.to_lowercase()),
                 Sort::Dir => ra.rule.direction.cmp(&rb.rule.direction),
                 Sort::Action => ra.rule.action.cmp(&rb.rule.action),
                 Sort::Profiles => ra.rule.profile.cmp(&rb.rule.profile),
-                Sort::Scope => crate::listeners::scope_summary(&ra.rule).cmp(&crate::listeners::scope_summary(&rb.rule)),
+                Sort::Scope => crate::listeners::scope_summary(&ra.rule)
+                    .cmp(&crate::listeners::scope_summary(&rb.rule)),
                 Sort::Hits => ra.total_hits().cmp(&rb.total_hits()),
                 Sort::LastSeen => {
                     let la = ra.usage.as_ref().and_then(|u| u.last_seen.clone());
                     let lb = rb.usage.as_ref().and_then(|u| u.last_seen.clone());
                     la.cmp(&lb)
                 }
-                Sort::Apps => ra.seen_apps.join(",").to_lowercase().cmp(&rb.seen_apps.join(",").to_lowercase()),
+                Sort::Apps => ra
+                    .seen_apps
+                    .join(",")
+                    .to_lowercase()
+                    .cmp(&rb.seen_apps.join(",").to_lowercase()),
                 Sort::Listening => ra.listening.join(",").cmp(&rb.listening.join(",")),
                 Sort::Reviewed => ra.reviewed.rank().cmp(&rb.reviewed.rank()),
             };
-            if self.sort_asc { ord } else { ord.reverse() }
+            if self.sort_asc {
+                ord
+            } else {
+                ord.reverse()
+            }
         });
         idx
     }
@@ -1079,8 +1159,16 @@ fn app_icon() -> egui::IconData {
     // 256px PNG embedded in the binary; decoded to RGBA for the window icon
     let bytes = include_bytes!("../assets/icons/firebreak-256.png");
     match image_rgba(bytes) {
-        Some((rgba, w, h)) => egui::IconData { rgba, width: w, height: h },
-        None => egui::IconData { rgba: vec![0; 4], width: 1, height: 1 },
+        Some((rgba, w, h)) => egui::IconData {
+            rgba,
+            width: w,
+            height: h,
+        },
+        None => egui::IconData {
+            rgba: vec![0; 4],
+            width: 1,
+            height: 1,
+        },
     }
 }
 
@@ -1095,7 +1183,10 @@ fn image_rgba(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
     match info.color_type {
         png::ColorType::Rgba => Some((buf, info.width, info.height)),
         png::ColorType::Rgb => {
-            let rgba = buf.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+            let rgba = buf
+                .chunks(3)
+                .flat_map(|c| [c[0], c[1], c[2], 255])
+                .collect();
             Some((rgba, info.width, info.height))
         }
         _ => None,
@@ -1105,7 +1196,11 @@ fn image_rgba(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 /// Render-scale for screenshot/QA runs: FIREBREAK_PPP=2 renders the whole UI
 /// at 2x pixel density (window physical size scales to match). Default 1.
 pub(crate) fn render_scale() -> f32 {
-    std::env::var("FIREBREAK_PPP").ok().and_then(|v| v.parse().ok()).filter(|p| (0.5..=4.0).contains(p)).unwrap_or(1.0)
+    std::env::var("FIREBREAK_PPP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|p| (0.5..=4.0).contains(p))
+        .unwrap_or(1.0)
 }
 
 fn native_options() -> eframe::NativeOptions {
@@ -1147,7 +1242,9 @@ pub fn run_preview(
         Box::new(move |cc| {
             cc.egui_ctx.set_pixels_per_point(render_scale());
             t::apply_style(&cc.egui_ctx);
-            Ok(Box::new(App::new_ready(rows, ctx_info, unmatched, listeners)))
+            Ok(Box::new(App::new_ready(
+                rows, ctx_info, unmatched, listeners,
+            )))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
@@ -1190,19 +1287,6 @@ mod helpers {
         painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, color));
     }
 
-    /// Outlined profile chip; returns width consumed.
-    pub fn chip(painter: &egui::Painter, top_left: egui::Pos2, tag: &str) -> f32 {
-        let (label, fg, bg, border) = profile_chip(tag);
-        let font = t::semibold(9.5);
-        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), fg);
-        let w = galley.size().x + 10.0;
-        let h = 15.0;
-        let r = Rect::from_min_size(top_left, Vec2::new(w, h));
-        painter.rect(r, 0.0, bg, Stroke::new(1.0, border));
-        painter.galley(egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0), galley, fg);
-        w + 3.0
-    }
-
     /// Clickable profile chip. `kept` = still in the rule's target scope;
     /// when false the chip is faded and struck through (pending removal).
     /// Returns (width, click response if editable).
@@ -1225,23 +1309,42 @@ mod helpers {
         let (fg, bg, border) = if kept {
             (fg, bg, border)
         } else {
-            (t::DISABLED(), egui::Color32::from_rgb(0xF2, 0xF3, 0xF5), t::HAIRLINE_TEXT())
+            (
+                t::DISABLED(),
+                egui::Color32::from_rgb(0xF2, 0xF3, 0xF5),
+                t::HAIRLINE_TEXT(),
+            )
         };
-        let galley = ui.painter().layout_no_wrap(short.to_string(), font.clone(), fg);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(short.to_string(), font.clone(), fg);
         let w = galley.size().x + 10.0;
         let h = 15.0;
         let r = Rect::from_min_size(top_left, Vec2::new(w, h));
         ui.painter().rect(r, 0.0, bg, Stroke::new(1.0, border));
-        ui.painter().galley(egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0), galley, fg);
+        ui.painter().galley(
+            egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0),
+            galley,
+            fg,
+        );
         if !kept {
             // strike-through
-            ui.painter().hline(r.left() + 3.0..=r.right() - 3.0, r.center().y, Stroke::new(1.0, t::DISABLED()));
+            ui.painter().hline(
+                r.left() + 3.0..=r.right() - 3.0,
+                r.center().y,
+                Stroke::new(1.0, t::DISABLED()),
+            );
         }
         let resp = if editable {
-            let re = ui.interact(r, ui.id().with(("prof", id_src.0, id_src.1)), egui::Sense::click());
+            let re = ui.interact(
+                r,
+                ui.id().with(("prof", id_src.0, id_src.1)),
+                egui::Sense::click(),
+            );
             if re.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0, t::ACCENT()));
+                ui.painter()
+                    .rect_stroke(r, 0.0, Stroke::new(1.0, t::ACCENT()));
             }
             Some(re)
         } else {

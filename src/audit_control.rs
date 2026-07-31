@@ -6,9 +6,9 @@
 //! SeSecurityPrivilege dance for us and the GUID form avoids localized
 //! subcategory names.
 
-use anyhow::{bail, Result};
 #[cfg(windows)]
 use anyhow::Context;
+use anyhow::{bail, Result};
 
 #[cfg(windows)]
 use windows::core::GUID;
@@ -114,7 +114,10 @@ fn set_auditing_api(state: AuditState) -> Result<()> {
     unsafe {
         let ok = AuditSetSystemPolicy(&[info]);
         if !ok.as_bool() {
-            bail!("AuditSetSystemPolicy failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "AuditSetSystemPolicy failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
     }
     Ok(())
@@ -171,21 +174,33 @@ pub fn security_log_max_bytes() -> Result<u64> {
 fn security_log_max_bytes_api() -> Result<u64> {
     use windows::core::w;
     use windows::Win32::System::EventLog::{
-        EvtChannelLoggingConfigMaxSize, EvtClose, EvtGetChannelConfigProperty, EvtOpenChannelConfig,
-        EVT_VARIANT,
+        EvtChannelLoggingConfigMaxSize, EvtClose, EvtGetChannelConfigProperty,
+        EvtOpenChannelConfig, EVT_VARIANT,
     };
     unsafe {
-        let h = EvtOpenChannelConfig(None, w!("Security"), 0).context("EvtOpenChannelConfig(Security)")?;
+        let h = EvtOpenChannelConfig(None, w!("Security"), 0)
+            .context("EvtOpenChannelConfig(Security)")?;
         // two-call: probe the buffer size, then read into it
         let mut used = 0u32;
-        let _ = EvtGetChannelConfigProperty(h, EvtChannelLoggingConfigMaxSize, 0, 0, None, &mut used);
+        let _ =
+            EvtGetChannelConfigProperty(h, EvtChannelLoggingConfigMaxSize, 0, 0, None, &mut used);
         let mut buf = vec![0u8; used.max(std::mem::size_of::<EVT_VARIANT>() as u32) as usize];
         let vptr = buf.as_mut_ptr() as *mut EVT_VARIANT;
-        let ok = EvtGetChannelConfigProperty(h, EvtChannelLoggingConfigMaxSize, 0, buf.len() as u32, Some(vptr), &mut used);
+        let ok = EvtGetChannelConfigProperty(
+            h,
+            EvtChannelLoggingConfigMaxSize,
+            0,
+            buf.len() as u32,
+            Some(vptr),
+            &mut used,
+        );
         let val = (*vptr).Anonymous.UInt64Val;
         let _ = EvtClose(h);
         if ok.is_err() {
-            bail!("EvtGetChannelConfigProperty failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "EvtGetChannelConfigProperty failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
         Ok(val)
     }
@@ -198,7 +213,10 @@ fn security_log_max_bytes_subprocess() -> Result<u64> {
         .output()
         .context("running wevtutil gl Security")?;
     if !out.status.success() {
-        bail!("wevtutil gl failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "wevtutil gl failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
@@ -240,21 +258,28 @@ fn set_security_log_max_bytes_api(bytes: u64) -> Result<()> {
     crate::winpriv::enable_privilege(windows::Win32::Security::SE_SECURITY_NAME)
         .context("enabling SeSecurityPrivilege")?;
     unsafe {
-        let h = EvtOpenChannelConfig(None, w!("Security"), 0).context("EvtOpenChannelConfig(Security)")?;
-        let mut variant = EVT_VARIANT {
+        let h = EvtOpenChannelConfig(None, w!("Security"), 0)
+            .context("EvtOpenChannelConfig(Security)")?;
+        let variant = EVT_VARIANT {
             Anonymous: EVT_VARIANT_0 { UInt64Val: bytes },
             Count: 0,
             Type: EvtVarTypeUInt64.0 as u32,
         };
-        let set = EvtSetChannelConfigProperty(h, EvtChannelLoggingConfigMaxSize, 0, &mut variant);
+        let set = EvtSetChannelConfigProperty(h, EvtChannelLoggingConfigMaxSize, 0, &variant);
         if set.is_err() {
             let _ = EvtClose(h);
-            bail!("EvtSetChannelConfigProperty failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "EvtSetChannelConfigProperty failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
         let save = EvtSaveChannelConfig(h, 0);
         let _ = EvtClose(h);
         if save.is_err() {
-            bail!("EvtSaveChannelConfig failed: {}", windows::core::Error::from_win32());
+            bail!(
+                "EvtSaveChannelConfig failed: {}",
+                windows::core::Error::from_win32()
+            );
         }
     }
     Ok(())

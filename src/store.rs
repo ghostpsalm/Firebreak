@@ -26,8 +26,8 @@ impl Store {
             crate::secure_dir::ensure_secured_dir(dir)
                 .with_context(|| format!("securing {}", dir.display()))?;
         }
-        let conn = Connection::open(path)
-            .with_context(|| format!("opening db {}", path.display()))?;
+        let conn =
+            Connection::open(path).with_context(|| format!("opening db {}", path.display()))?;
         conn.execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
@@ -157,7 +157,9 @@ impl Store {
     // ---- meta / checkpoint ----
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare_cached("SELECT value FROM meta WHERE key = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT value FROM meta WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         Ok(match rows.next()? {
             Some(row) => Some(row.get(0)?),
@@ -175,7 +177,9 @@ impl Store {
     }
 
     pub fn delete_meta(&self, key: &str) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached("DELETE FROM meta WHERE key = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("DELETE FROM meta WHERE key = ?1")?;
         stmt.execute(params![key])?;
         Ok(())
     }
@@ -194,15 +198,24 @@ impl Store {
     }
 
     pub fn clear_reviewed(&self, rule_id: &str) -> Result<()> {
-        let mut stmt = self.conn.prepare_cached("DELETE FROM reviewed_rules WHERE rule_id = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("DELETE FROM reviewed_rules WHERE rule_id = ?1")?;
         stmt.execute(params![rule_id])?;
         Ok(())
     }
 
     /// rule_id -> (fingerprint, reviewed_at)
     pub fn load_reviewed(&self) -> Result<std::collections::HashMap<String, (String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT rule_id, fingerprint, reviewed_at FROM reviewed_rules")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, String>(2)?))))?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rule_id, fingerprint, reviewed_at FROM reviewed_rules")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+            ))
+        })?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
             let (k, v) = row?;
@@ -340,9 +353,9 @@ impl Store {
                 u.by_profile.push((profile, allow, block));
             }
         }
-        let mut stmt = self.conn.prepare(
-            "SELECT rule_id, app_path, hits FROM rule_apps ORDER BY rule_id, hits DESC",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rule_id, app_path, hits FROM rule_apps ORDER BY rule_id, hits DESC")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -449,11 +462,8 @@ mod tests {
 
     impl TempStore {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "firebreak-test-{}-{}",
-                tag,
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("firebreak-test-{}-{}", tag, std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             let store = Store::open(&dir.join("t.db")).expect("open store");
             TempStore { store, dir }
@@ -488,13 +498,28 @@ mod tests {
     fn events_aggregate_counts_apps_and_seen_range() {
         let t = TempStore::new("agg");
         t.store
-            .record_event("r1", &ev(1, 5156, "2026-07-02T00:00:00.000Z", 7), r"C:\a.exe", "Public")
+            .record_event(
+                "r1",
+                &ev(1, 5156, "2026-07-02T00:00:00.000Z", 7),
+                r"C:\a.exe",
+                "Public",
+            )
             .unwrap();
         t.store
-            .record_event("r1", &ev(2, 5157, "2026-07-03T00:00:00.000Z", 7), r"C:\b.exe", "Public")
+            .record_event(
+                "r1",
+                &ev(2, 5157, "2026-07-03T00:00:00.000Z", 7),
+                r"C:\b.exe",
+                "Public",
+            )
             .unwrap();
         t.store
-            .record_event("r1", &ev(3, 5156, "2026-07-01T00:00:00.000Z", 7), r"C:\a.exe", "Public")
+            .record_event(
+                "r1",
+                &ev(3, 5156, "2026-07-01T00:00:00.000Z", 7),
+                r"C:\a.exe",
+                "Public",
+            )
             .unwrap();
         let u = t.store.all_usage().unwrap().remove("r1").expect("usage");
         assert_eq!(u.allow_count, 2);
@@ -515,9 +540,14 @@ mod tests {
     #[test]
     fn bucket_labels_round_trip() {
         let t = TempStore::new("buckets");
-        t.store.set_bucket_label("default:Unknown", "Unknown").unwrap();
+        t.store
+            .set_bucket_label("default:Unknown", "Unknown")
+            .unwrap();
         let m = t.store.bucket_labels().unwrap();
-        assert_eq!(m.get("default:Unknown").map(String::as_str), Some("Unknown"));
+        assert_eq!(
+            m.get("default:Unknown").map(String::as_str),
+            Some("Unknown")
+        );
     }
 
     #[test]
@@ -550,7 +580,12 @@ mod tests {
     fn unmatched_usage_filters_and_sorts() {
         let t = TempStore::new("unmatched");
         t.store
-            .record_event("default:Unknown", &ev(1, 5156, "2026-07-01T00:00:00Z", 5), "a", "Public")
+            .record_event(
+                "default:Unknown",
+                &ev(1, 5156, "2026-07-01T00:00:00Z", 5),
+                "a",
+                "Public",
+            )
             .unwrap();
         for i in 0..3 {
             t.store
@@ -563,7 +598,12 @@ mod tests {
                 .unwrap();
         }
         t.store
-            .record_event("real-rule", &ev(9, 5156, "2026-07-01T00:00:00Z", 7), "c", "Public")
+            .record_event(
+                "real-rule",
+                &ev(9, 5156, "2026-07-01T00:00:00Z", 7),
+                "c",
+                "Public",
+            )
             .unwrap();
         let unmatched = t.store.unmatched_usage().unwrap();
         assert_eq!(unmatched.len(), 2);

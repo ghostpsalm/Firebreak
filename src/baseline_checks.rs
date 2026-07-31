@@ -119,8 +119,14 @@ pub fn flags_for(rule: &RuleInfo) -> Vec<BaselineFlag> {
     // restriction is maximally broad
     if rule.is_enabled()
         && rule.action.eq_ignore_ascii_case("allow")
-        && rule.program.as_deref().map_or(true, |p| p.is_empty() || p == "Any")
-        && rule.local_port.as_deref().map_or(true, |p| p.is_empty() || p == "Any")
+        && rule
+            .program
+            .as_deref()
+            .is_none_or(|p| p.is_empty() || p == "Any")
+        && rule
+            .local_port
+            .as_deref()
+            .is_none_or(|p| p.is_empty() || p == "Any")
         && inbound
     {
         out.push(BaselineFlag {
@@ -135,7 +141,14 @@ pub fn flags_for(rule: &RuleInfo) -> Vec<BaselineFlag> {
 mod tests {
     use super::*;
 
-    fn rule(display: &str, dir: &str, action: &str, proto: Option<&str>, lport: Option<&str>, program: Option<&str>) -> RuleInfo {
+    fn rule(
+        display: &str,
+        dir: &str,
+        action: &str,
+        proto: Option<&str>,
+        lport: Option<&str>,
+        program: Option<&str>,
+    ) -> RuleInfo {
         RuleInfo {
             name: "{id}".into(),
             display_name: display.into(),
@@ -160,15 +173,36 @@ mod tests {
 
     #[test]
     fn mdns_flagged_by_name_or_port() {
-        let by_name = rule("Something (mDNS-In)", "Inbound", "Allow", None, None, Some("x.exe"));
+        let by_name = rule(
+            "Something (mDNS-In)",
+            "Inbound",
+            "Allow",
+            None,
+            None,
+            Some("x.exe"),
+        );
         assert!(titles(&by_name).contains(&"mDNS"));
-        let by_port = rule("Custom rule", "Inbound", "Allow", Some("UDP"), Some("5353"), Some("x.exe"));
+        let by_port = rule(
+            "Custom rule",
+            "Inbound",
+            "Allow",
+            Some("UDP"),
+            Some("5353"),
+            Some("x.exe"),
+        );
         assert!(titles(&by_port).contains(&"mDNS"));
     }
 
     #[test]
     fn inbound_only_checks_skip_outbound_rules() {
-        let outbound = rule("mDNS thing", "Outbound", "Allow", Some("UDP"), Some("5353"), Some("x.exe"));
+        let outbound = rule(
+            "mDNS thing",
+            "Outbound",
+            "Allow",
+            Some("UDP"),
+            Some("5353"),
+            Some("x.exe"),
+        );
         assert!(!titles(&outbound).contains(&"mDNS"));
     }
 
@@ -177,7 +211,14 @@ mod tests {
         let broad = rule("My Server", "Inbound", "Allow", None, None, None);
         assert!(titles(&broad).contains(&"Broad inbound allow"));
         // a program restriction defuses it
-        let scoped = rule("My Server", "Inbound", "Allow", None, None, Some(r"C:\srv.exe"));
+        let scoped = rule(
+            "My Server",
+            "Inbound",
+            "Allow",
+            None,
+            None,
+            Some(r"C:\srv.exe"),
+        );
         assert!(!titles(&scoped).contains(&"Broad inbound allow"));
         // block rules are never "broad allows"
         let block = rule("Block all", "Inbound", "Block", None, None, None);
@@ -186,13 +227,27 @@ mod tests {
 
     #[test]
     fn rdp_flagged_by_port() {
-        let r = rule("Custom remote thing", "Inbound", "Allow", Some("TCP"), Some("3389"), Some("x.exe"));
+        let r = rule(
+            "Custom remote thing",
+            "Inbound",
+            "Allow",
+            Some("TCP"),
+            Some("3389"),
+            Some("x.exe"),
+        );
         assert!(titles(&r).contains(&"RDP"));
     }
 
     #[test]
     fn multi_port_lists_match_individual_ports() {
-        let r = rule("Custom", "Inbound", "Allow", Some("UDP"), Some("137,138,139"), Some("x.exe"));
+        let r = rule(
+            "Custom",
+            "Inbound",
+            "Allow",
+            Some("UDP"),
+            Some("137,138,139"),
+            Some("x.exe"),
+        );
         assert!(titles(&r).contains(&"NetBIOS"));
     }
 }

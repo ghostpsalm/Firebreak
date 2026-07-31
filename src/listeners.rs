@@ -126,7 +126,9 @@ pub fn listeners_for_rule(rule: &RuleInfo, listeners: &[Listener]) -> Vec<String
             continue;
         }
         let port_ok = match &port_ranges {
-            Some(ranges) => ranges.iter().any(|&(a, b)| l.local_port >= a && l.local_port <= b),
+            Some(ranges) => ranges
+                .iter()
+                .any(|&(a, b)| l.local_port >= a && l.local_port <= b),
             None => true, // no port condition on the rule
         };
         let program_ok = match &program {
@@ -188,7 +190,12 @@ pub fn scope_summary(rule: &RuleInfo) -> String {
 mod tests {
     use super::*;
 
-    fn rule(dir: &str, proto: Option<&str>, lport: Option<&str>, program: Option<&str>) -> RuleInfo {
+    fn rule(
+        dir: &str,
+        proto: Option<&str>,
+        lport: Option<&str>,
+        program: Option<&str>,
+    ) -> RuleInfo {
         RuleInfo {
             name: "{id}".into(),
             display_name: "r".into(),
@@ -245,8 +252,14 @@ mod tests {
     #[test]
     fn port_ranges_and_lists_parse() {
         assert_eq!(parse_port_ranges("5000-5020"), vec![(5000, 5020)]);
-        assert_eq!(parse_port_ranges("137,138,139"), vec![(137, 137), (138, 138), (139, 139)]);
-        assert_eq!(parse_port_ranges("80,8000-8080"), vec![(80, 80), (8000, 8080)]);
+        assert_eq!(
+            parse_port_ranges("137,138,139"),
+            vec![(137, 137), (138, 138), (139, 139)]
+        );
+        assert_eq!(
+            parse_port_ranges("80,8000-8080"),
+            vec![(80, 80), (8000, 8080)]
+        );
         assert!(parse_port_ranges("RPC").is_empty());
     }
 
@@ -260,8 +273,18 @@ mod tests {
 
     #[test]
     fn program_rule_without_ports_matches_by_process() {
-        let ls = vec![listener("UDP", 5353, "chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")];
-        let r = rule("Inbound", Some("UDP"), None, Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
+        let ls = vec![listener(
+            "UDP",
+            5353,
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        )];
+        let r = rule(
+            "Inbound",
+            Some("UDP"),
+            None,
+            Some(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        );
         assert_eq!(listeners_for_rule(&r, &ls), vec!["chrome:5353"]);
     }
 
@@ -274,13 +297,26 @@ mod tests {
 
     #[test]
     fn scope_summary_is_compact() {
-        assert_eq!(scope_summary(&rule("Inbound", Some("TCP"), Some("3389"), None)), "TCP 3389");
         assert_eq!(
-            scope_summary(&rule("Inbound", Some("UDP"), Some("5353"), Some(r"C:\x\chrome.exe"))),
+            scope_summary(&rule("Inbound", Some("TCP"), Some("3389"), None)),
+            "TCP 3389"
+        );
+        assert_eq!(
+            scope_summary(&rule(
+                "Inbound",
+                Some("UDP"),
+                Some("5353"),
+                Some(r"C:\x\chrome.exe")
+            )),
             "UDP 5353 · chrome.exe"
         );
         assert_eq!(
-            scope_summary(&rule("Inbound", Some("TCP"), None, Some(r"C:\x\anydesk.exe"))),
+            scope_summary(&rule(
+                "Inbound",
+                Some("TCP"),
+                None,
+                Some(r"C:\x\anydesk.exe")
+            )),
             "TCP any · anydesk.exe"
         );
         assert_eq!(scope_summary(&rule("Inbound", None, None, None)), "Any");
