@@ -1,0 +1,156 @@
+{
+  "recorded_at": "2026-08-01T05:01:53Z",
+  "repo": "write-safety",
+  "branch": "pipeline/write-safety",
+  "base": "631bba67d664d5e29537bd9ce9acddf0257a8384",
+  "window_start": "2026-07-31T23:41:56+10:00",
+  "head": "ecd7c37a9d93bbdc93c004e7b35ab1bd1d6327ea",
+  "issue": {
+    "number": 6,
+    "state": "OPEN",
+    "title": "Reviewed-rule marks can silently fail to persist under concurrent DB access",
+    "url": "https://github.com/ghostpsalm/Firebreak/issues/6"
+  },
+  "commits": [
+    {
+      "sha": "ecd7c37a9d93bbdc93c004e7b35ab1bd1d6327ea",
+      "subject": "Fix silent reviewed-mark loss on failed DB write (#6)"
+    }
+  ],
+  "commit_count": 1,
+  "diffstat": "1 file changed, 249 insertions(+), 6 deletions(-)",
+  "ci": {
+    "conclusion": "failure",
+    "displayTitle": "Add CLAUDE.md: stack, gate, conventions, and risk profile",
+    "status": "completed",
+    "url": "https://github.com/ghostpsalm/Firebreak/actions/runs/30679572143"
+  },
+  "tokens": {
+    "available": true,
+    "scoped": true,
+    "parent_thread": {
+      "input_tokens": 312,
+      "output_tokens": 111422,
+      "cache_read_input_tokens": 14475296,
+      "cache_creation_input_tokens": 1090565
+    },
+    "subagents": {
+      "input_tokens": 22,
+      "output_tokens": 16354,
+      "cache_read_input_tokens": 443078,
+      "cache_creation_input_tokens": 9350
+    },
+    "subagent_spawns": 11,
+    "by_agent": {
+      "architect": {
+        "spawns": 1,
+        "output_tokens": 2452,
+        "cache_read_input_tokens": 43494,
+        "total_tokens": 47074,
+        "duration_ms": 76672,
+        "models": [
+          "claude-fable-5"
+        ]
+      },
+      "oracle": {
+        "spawns": 3,
+        "output_tokens": 3110,
+        "cache_read_input_tokens": 156339,
+        "total_tokens": 161166,
+        "duration_ms": 796889,
+        "models": [
+          "claude-opus-5"
+        ]
+      },
+      "builder": {
+        "spawns": 2,
+        "output_tokens": 1527,
+        "cache_read_input_tokens": 51301,
+        "total_tokens": 55140,
+        "duration_ms": 165845,
+        "models": [
+          "claude-sonnet-5"
+        ]
+      },
+      "seraph": {
+        "spawns": 2,
+        "output_tokens": 3968,
+        "cache_read_input_tokens": 79318,
+        "total_tokens": 83887,
+        "duration_ms": 280826,
+        "models": [
+          "claude-fable-5"
+        ]
+      },
+      "breaker": {
+        "spawns": 2,
+        "output_tokens": 4244,
+        "cache_read_input_tokens": 87995,
+        "total_tokens": 94231,
+        "duration_ms": 772218,
+        "models": [
+          "claude-opus-5"
+        ]
+      },
+      "reviewer": {
+        "spawns": 1,
+        "output_tokens": 1053,
+        "cache_read_input_tokens": 24631,
+        "total_tokens": 27306,
+        "duration_ms": 66323,
+        "models": [
+          "claude-opus-5"
+        ]
+      }
+    },
+    "usage_blocks": 156,
+    "skipped_no_timestamp": 0,
+    "transcripts": [
+      {
+        "file": "cb8fe131-8cdd-46cb-bfa1-e2a55fc2cf29.jsonl",
+        "usage_blocks": 156
+      }
+    ],
+    "agent_wall_clock_ms": 2158773,
+    "first_activity": "2026-07-31T22:07:20.438000+00:00",
+    "last_activity": "2026-08-01T05:01:29.570000+00:00",
+    "notification_tokens": 0,
+    "attribution": "this session, by CLAUDE_CODE_SESSION_ID",
+    "suspect": false
+  },
+  "asks": [
+    "/implement 6",
+    "/submit"
+  ],
+  "fence_decisions": {
+    "ask: This edits a version number.": 417,
+    "ask: This would publish a GitHub release, which ships to real devices.": 143,
+    "ask: This would publish a crate to a registry, which ships to real devices.": 145,
+    "ask: This posts to the release endpoint, which ships an update to real devices.": 140,
+    "block: recursive/forced delete": 793,
+    "block: editing the deployed factory directly": 966,
+    "block: writing to a file the harness owns": 138,
+    "block: touching a secret/credential file": 692,
+    "block: force push (never rewrite published history)": 139,
+    "block: editing an existing migration": 138,
+    "block: hard reset discards work": 140,
+    "block: sending a secret/credential file to a network client": 240,
+    "block: sending ~/.claude.json to a network client": 16,
+    "ask: This would rewrite package.json's version and tag it.": 1,
+    "block: piping remote content straight to a shell": 2
+  },
+  "status": "done",
+  "note": "CI does not run on feature-branch push (workflows trigger on main only) - only the local gate was exercised for this branch, and it was green (55 tests). The 'ci' field on this record is misleading: factory_record.py's CI check is repo-wide, not branch-scoped, so it captured a failing main-branch CI run (triggered by an unrelated main push during this session) - that failure is pre-existing CI infra breakage (looks like clippy running against native Linux instead of cross-compiling to x86_64-pc-windows-gnu in the CI runner, unrelated to issue #6), not a failure of this branch's work. self.status error-surfacing is currently a UI no-op pending #11 (status field never rendered anywhere) - the primary attestation-safety fix holds regardless of #11.",
+  "outcome": {
+    "slices": "3",
+    "laps": "2",
+    "bounces": "0",
+    "guard_tests": "1",
+    "tests_added": "3",
+    "findings_fixed": "1",
+    "findings_deferred": "4",
+    "seraph_unsure": "0",
+    "breaker_verdict": "no-defect-found",
+    "reviewer_blocking": "0"
+  }
+}
