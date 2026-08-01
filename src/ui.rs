@@ -581,14 +581,25 @@ impl App {
         };
         if let (Some(db), Some(op)) = (self.db_path.clone(), write) {
             let name = self.rows[ri].rule.name.clone();
-            if let Ok(store) = crate::store::Store::open(&db) {
-                let _ = match op {
-                    Some((fp, at)) => store.set_reviewed(&name, &fp, &at),
-                    None => store.clear_reviewed(&name),
-                };
+            match crate::store::Store::open(&db) {
+                Ok(store) => {
+                    let result = match op {
+                        Some((fp, at)) => store.set_reviewed(&name, &fp, &at),
+                        None => store.clear_reviewed(&name),
+                    };
+                    match result {
+                        Ok(()) => {
+                            self.rows[ri].reviewed = next;
+                            self.status.clear();
+                        }
+                        Err(e) => self.status = format!("Reviewed status not saved: {e:#}"),
+                    }
+                }
+                Err(e) => self.status = format!("Reviewed status not saved: {e:#}"),
             }
+        } else {
+            self.rows[ri].reviewed = next;
         }
-        self.rows[ri].reviewed = next;
     }
 
     /// Query GitHub for the latest release on a worker thread.
@@ -1351,5 +1362,237 @@ mod helpers {
             None
         };
         (w + 3.0, resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scratch DB directory, removed on drop.
+    struct TempDb {
+        dir: PathBuf,
+    }
+
+    impl TempDb {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "firebreak-ui-test-{}-{}",
+                tag,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            TempDb { dir }
+        }
+        fn path(&self) -> PathBuf {
+            self.dir.join("t.db")
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// ReviewState has no Debug (it is a UI enum); render it for messages.
+    fn review_label(r: &ReviewState) -> String {
+        match r {
+            ReviewState::No => "No".to_string(),
+            ReviewState::Stale(at) => format!("Stale({at})"),
+            ReviewState::Yes(at) => format!("Yes({at})"),
+        }
+    }
+
+    fn unreviewed_row(name: &str) -> RuleRow {
+        let rule: RuleInfo = serde_json::from_str(&format!(
+            r#"{{"Name":"{name}","DisplayName":"{name}","Enabled":"True","Direction":"Inbound",
+                "Action":"Allow","Profile":"Private","Protocol":"TCP","LocalPort":"22"}}"#
+        ))
+        .unwrap();
+        RuleRow {
+            target_enabled: rule.is_enabled(),
+            target_profiles: crate::model::ProfileSet::from_rule(&rule),
+            rule,
+            usage: None,
+            flags: Vec::new(),
+            seen_apps: Vec::new(),
+            listening: Vec::new(),
+            reviewed: ReviewState::No,
+        }
+    }
+
+    /// A reviewed mark is a security attestation, so it may only appear in
+    /// the UI once it has actually been persisted.
+    ///
+    /// Contract — issue #6 ("Reviewed-rule marks can silently fail to
+    /// persist under concurrent DB access"), Fix: "Propagate the `Result`
+    /// from `store.set_reviewed`/`clear_reviewed` and only update
+    /// `self.rows[ri].reviewed` on success (surface a `self.status` error
+    /// otherwise)."
+    #[test]
+    fn toggle_reviewed_leaves_row_unmarked_and_reports_when_the_write_fails() {
+        let db = TempDb::new("toggle-reviewed-busy");
+
+        // The failure mode named in the issue: pipeline::analyze() holds one
+        // long-lived `BEGIN IMMEDIATE` across the whole ingest loop, so a
+        // second writer against the same file gets SQLITE_BUSY.
+        let ingest = crate::store::Store::open(&db.path()).expect("open ingest connection");
+        ingest.begin().expect("hold the ingest write transaction");
+
+        // Fixture check 1 — the write lock really is held, so every writer
+        // fails. (Probed on a connection with the busy timeout disabled;
+        // rusqlite otherwise applies a 5 s default, which is why the
+        // toggle below takes seconds rather than milliseconds.)
+        let probe = rusqlite::Connection::open(db.path()).expect("open probe connection");
+        probe
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("disable probe busy timeout");
+        let locked = probe.execute_batch("BEGIN IMMEDIATE");
+        assert!(
+            locked.is_err(),
+            "fixture must hold the write lock; BEGIN IMMEDIATE unexpectedly succeeded"
+        );
+        drop(probe);
+
+        // Fixture check 2 — opening still succeeds under contention, so the
+        // only step that can fail is the write itself. Without this, the
+        // test could be satisfied by handling a Store::open error while the
+        // discarded write Result — the actual subject of #6 — survived.
+        crate::store::Store::open(&db.path())
+            .expect("a second connection still opens while the ingest txn is held");
+
+        let mut app = App::base(Some(db.path()));
+        app.rows.push(unreviewed_row("Rule-A"));
+
+        app.toggle_reviewed(0);
+
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::No),
+            "a failed write must leave the row unreviewed, but the row shows {}",
+            review_label(&app.rows[0].reviewed)
+        );
+        assert!(
+            !app.status.is_empty(),
+            "a failed reviewed write must be surfaced to the user via app.status"
+        );
+
+        ingest.rollback().expect("release the ingest transaction");
+    }
+
+    /// Same attestation invariant, the other way persistence can fail: the
+    /// connection is never obtained at all.
+    ///
+    /// Contract — issue #6, Summary: "`toggle_reviewed` opens its own SQLite
+    /// connection on the UI thread and discards the write's `Result`. If it
+    /// fails, the UI still shows the rule as reviewed — the mark silently
+    /// reverts on the next refresh or restart, with no error ever shown."
+    /// The harm the issue names is the row showing a mark that was never
+    /// persisted; opening failing and writing failing are the same harm, so
+    /// both must leave the row unmarked and report. The sibling test above
+    /// pins only the write; nothing pins the open.
+    #[test]
+    fn toggle_reviewed_leaves_row_unmarked_and_reports_when_the_store_cannot_be_opened() {
+        let db = TempDb::new("toggle-reviewed-open-fails");
+        std::fs::create_dir_all(&db.dir).expect("create scratch dir");
+
+        // Deterministic, no privileges required, no mocking: put a plain file
+        // where the DB's parent directory would have to be. Creating or
+        // securing that directory cannot succeed while a non-directory
+        // occupies the name.
+        let blocker = db.dir.join("not-a-directory");
+        std::fs::write(&blocker, b"plain file occupying the db's parent name")
+            .expect("create the blocking file");
+        let db_path = blocker.join("firebreak.db");
+
+        // Fixture check — the failure really is at open. If this ever starts
+        // succeeding the test must fail loudly rather than quietly assert
+        // nothing, and it rules out the sibling test's failure mode (a store
+        // that opens, then fails to write).
+        assert!(
+            crate::store::Store::open(&db_path).is_err(),
+            "fixture must make Store::open fail; it unexpectedly succeeded for {}",
+            db_path.display()
+        );
+
+        let mut app = App::base(Some(db_path));
+        app.rows.push(unreviewed_row("Rule-A"));
+        assert!(app.status.is_empty(), "fixture starts with no status");
+
+        app.toggle_reviewed(0);
+
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::No),
+            "a store that could not be opened persisted nothing, so the row \
+             must stay unreviewed, but the row shows {}",
+            review_label(&app.rows[0].reviewed)
+        );
+        assert!(
+            !app.status.is_empty(),
+            "a reviewed mark that could not be persisted must be surfaced to \
+             the user via app.status"
+        );
+    }
+
+    /// `app.status` reports the outcome of the *latest* action, so a retry
+    /// that persists must stop the superseded failure from being reported.
+    ///
+    /// Contract — the app-wide status convention: every other status writer
+    /// assigns unconditionally for the action it reports, success and failure
+    /// alike (`ui/paint.rs:626` restore-audit-state, `:680`/`:691` CSV export,
+    /// `:759` save-script, `ui.rs:834`/`:843` ingest, `:1040` apply). None of
+    /// them can leave the previous action's message standing. Combined with
+    /// issue #6's Fix — "surface a `self.status` error otherwise" — status is
+    /// this action's report, not a log. A user whose toggle failed under
+    /// contention and then succeeded on retry must not still be told
+    /// "Reviewed status not saved".
+    ///
+    /// The contract does not say what a successful toggle should *say* (clear,
+    /// or a success line like the export/apply writers use), so this asserts
+    /// only the invariant both satisfy: the stale failure is gone.
+    #[test]
+    fn toggle_reviewed_stops_reporting_the_old_failure_once_a_retry_succeeds() {
+        let db = TempDb::new("toggle-reviewed-stale-status");
+
+        // Same fixture as the sibling test: a held `BEGIN IMMEDIATE` makes the
+        // first toggle's write fail — but here it is released afterwards, which
+        // is what makes the failure transient and the retry realistic (the
+        // ingest transaction of #6 finishes, the user clicks again).
+        let ingest = crate::store::Store::open(&db.path()).expect("open ingest connection");
+        ingest.begin().expect("hold the ingest write transaction");
+
+        let mut app = App::base(Some(db.path()));
+        app.rows.push(unreviewed_row("Rule-A"));
+
+        app.toggle_reviewed(0);
+
+        // Fixture check 1 — the first toggle really did fail and really did
+        // leave a message behind; without this the assertion below is vacuous.
+        let stale = app.status.clone();
+        assert!(
+            !stale.is_empty(),
+            "fixture: the contended toggle must have failed and set a status"
+        );
+
+        ingest.rollback().expect("release the ingest transaction");
+
+        app.toggle_reviewed(0);
+
+        // Fixture check 2 — the retry actually persisted. If it had failed too,
+        // the status could still hold a (freshly written) failure message and
+        // the subject assertion would fail for the wrong reason.
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::Yes(_)),
+            "fixture: the retry must succeed once the lock is released, but \
+             the row shows {}",
+            review_label(&app.rows[0].reviewed)
+        );
+
+        assert!(
+            !app.status.contains(&stale),
+            "a successful toggle must not leave the earlier failure standing; \
+             app.status still reads {:?}",
+            app.status
+        );
     }
 }
