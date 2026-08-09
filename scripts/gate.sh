@@ -10,12 +10,19 @@ echo "== cargo clippy =="
 if [[ "${OS:-}" == "Windows_NT" ]]; then
     cargo clippy --all-targets -- -D warnings
 else
-    # Firebreak is a Windows-only app (heavy #[cfg(windows)] use). Linting the
-    # native Linux target flags huge swaths of real code as dead, since none
-    # of it is reachable outside a Windows build. Lint the actual deployment
-    # target instead — requires the x86_64-pc-windows-gnu rustup target and
-    # a mingw-w64 gcc (`rustup target add x86_64-pc-windows-gnu`).
+    # Two real deployment targets, so lint both. The Windows target is the one
+    # the bulk of the code is written for and can only be checked by
+    # cross-compiling (needs the x86_64-pc-windows-gnu rustup target and a
+    # mingw-w64 gcc); the native target is the Linux build and its backends.
+    #
+    # Native linting used to be skipped because Windows-only code compiled on
+    # Linux read as dead. That is now expressed as #[cfg(windows)] instead, so
+    # the native lint is signal again — and it is the ONLY thing that lints the
+    # Linux backends at all. Do not drop it.
+    echo "-- windows target --"
     cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+    echo "-- native (linux) target --"
+    cargo clippy --all-targets -- -D warnings
 fi
 
 echo "== cargo test =="

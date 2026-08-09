@@ -23,12 +23,14 @@ pub fn powershell() -> PathBuf {
 /// A `Command` that never flashes a console window — CREATE_NO_WINDOW.
 /// All subprocess spawns go through this so the GUI stays clean.
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    let mut c = std::process::Command::new(program);
+    let c = std::process::Command::new(program);
     #[cfg(windows)]
-    {
+    let c = {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut c = c;
         c.creation_flags(CREATE_NO_WINDOW);
-    }
+        c
+    };
     c
 }

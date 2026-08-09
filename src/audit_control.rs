@@ -25,7 +25,9 @@ pub const FILTERING_PLATFORM_CONNECTION_GUID: &str = "{0CCE9226-69AE-11D9-BED3-5
 #[cfg(windows)]
 const SUBCATEGORY: GUID = GUID::from_u128(0x0CCE9226_69AE_11D9_BED3_505054503030);
 
+#[cfg(windows)]
 const POLICY_AUDIT_EVENT_SUCCESS: u32 = 0x1;
+#[cfg(windows)]
 const POLICY_AUDIT_EVENT_FAILURE: u32 = 0x2;
 #[cfg(windows)]
 const POLICY_AUDIT_EVENT_NONE: u32 = 0x4;

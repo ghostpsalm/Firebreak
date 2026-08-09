@@ -253,42 +253,6 @@ fn dump_filters() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_args_from;
-
-    fn parse(argv: &[&str]) -> super::Args {
-        parse_args_from(argv.iter().map(|s| (*s).to_string()))
-    }
-
-    #[test]
-    fn collect_without_path_defaults() {
-        let a = parse(&["--collect"]);
-        assert_eq!(a.collect, Some(None));
-    }
-
-    #[test]
-    fn collect_with_path_takes_it() {
-        let a = parse(&["--collect", r"C:\out.zip"]);
-        assert_eq!(a.collect, Some(Some(r"C:\out.zip".into())));
-    }
-
-    #[test]
-    fn collect_does_not_swallow_following_flag() {
-        // regression for F2: `--collect --enable-only` must run both, not
-        // silently drop --enable-only while peeking for a path
-        let a = parse(&["--collect", "--enable-only"]);
-        assert_eq!(a.collect, Some(None));
-        assert!(a.enable_only);
-    }
-
-    #[test]
-    fn db_takes_a_path() {
-        let a = parse(&["--db", r"D:\fb.db"]);
-        assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
-    }
-}
-
 fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     let rows = &result.rows;
     let mut sorted: Vec<&ui::RuleRow> = rows.iter().collect();
@@ -384,4 +348,40 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args_from;
+
+    fn parse(argv: &[&str]) -> super::Args {
+        parse_args_from(argv.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn collect_without_path_defaults() {
+        let a = parse(&["--collect"]);
+        assert_eq!(a.collect, Some(None));
+    }
+
+    #[test]
+    fn collect_with_path_takes_it() {
+        let a = parse(&["--collect", r"C:\out.zip"]);
+        assert_eq!(a.collect, Some(Some(r"C:\out.zip".into())));
+    }
+
+    #[test]
+    fn collect_does_not_swallow_following_flag() {
+        // regression for F2: `--collect --enable-only` must run both, not
+        // silently drop --enable-only while peeking for a path
+        let a = parse(&["--collect", "--enable-only"]);
+        assert_eq!(a.collect, Some(None));
+        assert!(a.enable_only);
+    }
+
+    #[test]
+    fn db_takes_a_path() {
+        let a = parse(&["--db", r"D:\fb.db"]);
+        assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
+    }
 }

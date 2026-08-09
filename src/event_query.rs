@@ -14,6 +14,9 @@ use anyhow::Result;
 use crate::model::EventRecord;
 
 /// XPath filter for 5156/5157, resuming strictly after `since_record_id`.
+/// Only the Windows binary queries the Security channel, but the cursor
+/// logic is pure and stays unit-tested from any host.
+#[cfg(any(windows, test))]
 pub fn build_query(since_record_id: Option<u64>) -> String {
     match since_record_id {
         Some(id) => format!(
@@ -172,14 +175,6 @@ pub fn query_events_from_file(
     drain_query(&result_set, on_event)
 }
 
-#[cfg(not(windows))]
-pub fn query_events_from_file(
-    _path: &std::path::Path,
-    _on_event: impl FnMut(EventRecord),
-) -> Result<SkippedCount> {
-    bail!("event log query is only available on Windows")
-}
-
 /// Pull every matched event from an open result set, delivering the parsed
 /// ones to `on_event` and counting the ones that couldn't be parsed.
 #[cfg(windows)]
@@ -304,6 +299,7 @@ fn decode_direction(raw: &str) -> String {
 }
 
 /// Extract just the EventRecordID from any rendered event XML.
+#[cfg(any(windows, test))]
 pub fn parse_record_id(xml: &str) -> Option<u64> {
     let start = xml.find("<EventRecordID>")? + "<EventRecordID>".len();
     let end = xml[start..].find("</EventRecordID>")? + start;

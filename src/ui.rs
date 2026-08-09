@@ -622,6 +622,7 @@ impl App {
 
     /// Analyze events from an imported .evtx file on a worker thread.
     /// `append` = add to the current import session; otherwise start fresh.
+    #[cfg(windows)]
     fn spawn_import(&mut self, path: PathBuf, append: bool, egui_ctx: egui::Context) {
         // stable per-process import scratch DB
         let db = self.import_db.clone().unwrap_or_else(|| {
@@ -654,6 +655,7 @@ impl App {
 
     /// Open a firebreak-export bundle (another device's rules + events) as a
     /// fresh read-only review session.
+    #[cfg(windows)]
     pub(crate) fn spawn_import_bundle(&mut self, path: PathBuf, egui_ctx: egui::Context) {
         let db = std::env::temp_dir().join(format!("firebreak-import-{}.db", std::process::id()));
         self.import_db = Some(db.clone());

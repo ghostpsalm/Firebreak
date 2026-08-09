@@ -34,7 +34,9 @@ impl Profile {
         }
     }
 
-    /// Inverse of label(); NetworkCategory spellings also accepted.
+    /// Inverse of label(); NetworkCategory spellings also accepted. Only the
+    /// bundle-read path calls it, which no Linux run reaches.
+    #[cfg(any(windows, test))]
     pub fn from_label(s: &str) -> Profile {
         match s.trim() {
             "Domain" | "DomainAuthenticated" => Profile::Domain,

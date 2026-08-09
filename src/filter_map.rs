@@ -104,6 +104,7 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
 
 /// Decode a providerData blob as UTF-16LE text (lossy, control chars
 /// stripped) plus a hex dump capped for storage.
+#[cfg(windows)]
 fn decode_provider_data(data: &[u8]) -> (String, String) {
     let utf16: Vec<u16> = data
         .chunks_exact(2)

@@ -187,6 +187,10 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
 /// dedicated import DB, never the live store). `reset_first` clears any prior
 /// import so a fresh single-file review doesn't concatenate; false appends
 /// (multi-machine review).
+///
+/// Windows-only: reading a .evtx needs the EvtQuery API, so there is no
+/// Linux path here. A Linux host reviews Linux evidence, not Windows events.
+#[cfg(windows)]
 pub fn import_evtx(
     scratch_db: &Path,
     evtx_path: &Path,
@@ -222,6 +226,8 @@ pub fn import_evtx(
 
 /// Import a firebreak-export bundle: the target's own rules and interface
 /// profiles ride along, so attribution reflects THAT device, not this one.
+/// Windows-only for the same reason as [`import_evtx`].
+#[cfg(windows)]
 pub fn import_bundle(
     scratch_db: &Path,
     zip_path: &Path,
@@ -254,6 +260,7 @@ pub fn import_bundle(
     result
 }
 
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 fn import_events(
     scratch_db: &Path,
