@@ -211,6 +211,30 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
     // Declare the host's scope vocabulary before anything renders a rule.
     model::set_vocabulary(backend.scope_vocabulary());
 
+    // Windows-only options must say so. Falling through to the window
+    // instead would silently do something the user did not ask for.
+    for (requested, flag, why) in [
+        (
+            args.collect.is_some(),
+            "--collect",
+            "offline bundles carry a Windows .evtx, which has no Linux equivalent",
+        ),
+        (
+            args.dump_filters,
+            "--dump-filters",
+            "there is no WFP filter table on Linux",
+        ),
+        (
+            args.export_support,
+            "--export-support",
+            "the support bundle collects Windows audit state",
+        ),
+    ] {
+        if requested {
+            bail!("{flag} is not available on Linux — {why}");
+        }
+    }
+
     if args.enable_only {
         println!("{}", linux::enable_collection(backend, &args.db_path)?);
         return Ok(());
