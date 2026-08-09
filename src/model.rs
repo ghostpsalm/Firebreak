@@ -62,42 +62,189 @@ impl RuleInfo {
         )
     }
 
-    /// Profile tags for display: ["Domain"], ["Private", "Public"], … or
-    /// ["Any"]. Unknown/NotApplicable values render as-is so nothing is
-    /// silently hidden.
-    pub fn profile_tags(&self) -> Vec<&'static str> {
-        let p = self.profile.to_lowercase();
-        if p.contains("any") {
-            return vec!["Any"];
+    /// Scope tags for display: ["Domain"], ["Private", "Public"], … or
+    /// ["Any"]. Names come from the host's vocabulary, so on firewalld these
+    /// are zones. Unrecognised values (Windows' "NotApplicable", an unknown
+    /// zone) yield no tags, which callers must treat as "scope unknown" —
+    /// never as "scope empty".
+    pub fn scope_tags(&self, vocab: &ScopeVocabulary) -> Vec<String> {
+        let raw = self.profile.to_lowercase();
+        if vocab.is_empty() {
+            return Vec::new();
         }
-        let mut tags = Vec::new();
-        if p.contains("domain") {
-            tags.push("Domain");
+        if raw.contains(&vocab.any_token.to_lowercase()) {
+            return vec![vocab.any_token.clone()];
         }
-        if p.contains("private") {
-            tags.push("Private");
-        }
-        if p.contains("public") {
-            tags.push("Public");
-        }
-        tags
+        vocab
+            .names
+            .iter()
+            .filter(|n| raw.contains(&n.to_lowercase()))
+            .cloned()
+            .collect()
     }
 
-    /// Whether this rule is active in at least one of the selected profiles.
-    /// "Any" (and unrecognized values like NotApplicable) match whenever at
-    /// least one profile is selected — filtering must never hide a rule
-    /// whose scope we couldn't parse.
-    pub fn applies_to_profile(&self, domain: bool, private: bool, public: bool) -> bool {
-        if !(domain || private || public) {
-            return false;
-        }
-        let tags = self.profile_tags();
-        if tags.is_empty() || tags == ["Any"] {
+    /// Whether this rule is active in at least one of the selected scopes.
+    /// "Any", an unparseable scope, and a backend with no scope concept at
+    /// all each match whenever *something* is selected: a filter must never
+    /// hide a rule whose scope could not be read, or the user audits a
+    /// firewall while a rule they cannot see is letting traffic through.
+    pub fn applies_to_scopes(&self, vocab: &ScopeVocabulary, selected: &[String]) -> bool {
+        if vocab.is_empty() {
             return true;
         }
-        (domain && tags.contains(&"Domain"))
-            || (private && tags.contains(&"Private"))
-            || (public && tags.contains(&"Public"))
+        if selected.is_empty() {
+            return false;
+        }
+        let tags = self.scope_tags(vocab);
+        if tags.is_empty() || tags == [vocab.any_token.clone()] {
+            return true;
+        }
+        tags.iter().any(|t| selected.contains(t))
+    }
+}
+
+/// The scopes a firewall backend divides its rules into.
+///
+/// Windows has exactly three network profiles. firewalld has a user-defined
+/// list of zones, of any length. ufw has no such concept at all — every rule
+/// simply applies. Nothing shared can therefore hardcode three names, so the
+/// names are data supplied by whichever backend is in charge.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScopeVocabulary {
+    /// Scope names in display order. Empty = this backend has no scopes.
+    pub names: Vec<String>,
+    /// The token a rule uses to mean "all scopes".
+    pub any_token: String,
+}
+
+impl ScopeVocabulary {
+    /// Windows Firewall's network profiles.
+    pub fn windows_profiles() -> Self {
+        ScopeVocabulary {
+            names: vec!["Domain".into(), "Private".into(), "Public".into()],
+            any_token: "Any".into(),
+        }
+    }
+
+    /// A backend without scopes, e.g. ufw.
+    pub fn none() -> Self {
+        ScopeVocabulary::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+/// The host's scope vocabulary. It is a property of the machine Firebreak is
+/// auditing — fixed for the life of the process — so it is set once at
+/// startup rather than threaded through every rule-rendering call.
+static VOCABULARY: std::sync::OnceLock<ScopeVocabulary> = std::sync::OnceLock::new();
+
+/// Declare the host's vocabulary. First call wins; later calls are ignored,
+/// so a backend cannot silently redefine scopes mid-run.
+pub fn set_vocabulary(vocab: ScopeVocabulary) {
+    let _ = VOCABULARY.set(vocab);
+}
+
+pub fn vocabulary() -> &'static ScopeVocabulary {
+    VOCABULARY.get_or_init(|| {
+        if cfg!(windows) {
+            ScopeVocabulary::windows_profiles()
+        } else {
+            ScopeVocabulary::none()
+        }
+    })
+}
+
+/// Which of the host vocabulary's scopes a rule is active in — the editable
+/// scope behind the clickable chips. Ordered to match the vocabulary so the
+/// UI renders scopes in a stable order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScopeSet {
+    entries: Vec<(String, bool)>,
+    /// Carried so the set can render itself back to rule text without
+    /// needing the vocabulary again.
+    any_token: String,
+}
+
+impl ScopeSet {
+    pub fn from_rule(r: &RuleInfo, vocab: &ScopeVocabulary) -> ScopeSet {
+        let tags = r.scope_tags(vocab);
+        // "Any" and an unreadable scope both expand to every scope: the rule
+        // is live everywhere until proven otherwise.
+        let all = tags.is_empty() || tags == [vocab.any_token.clone()];
+        ScopeSet {
+            entries: vocab
+                .names
+                .iter()
+                .map(|n| (n.clone(), all || tags.contains(n)))
+                .collect(),
+            any_token: vocab.any_token.clone(),
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.entries.iter().map(|(n, a)| (n.as_str(), *a))
+    }
+
+    pub fn is_active(&self, name: &str) -> bool {
+        self.entries.iter().any(|(n, a)| n == name && *a)
+    }
+
+    pub fn set(&mut self, name: &str, active: bool) {
+        for (n, a) in self.entries.iter_mut() {
+            if n == name {
+                *a = active;
+            }
+        }
+    }
+
+    pub fn toggle(&mut self, name: &str) {
+        let now = self.is_active(name);
+        self.set(name, !now);
+    }
+
+    /// No scope selected. For a backend with no scopes this is false — an
+    /// empty vocabulary means "always applies", not "applies nowhere".
+    pub fn is_empty(&self) -> bool {
+        !self.entries.is_empty() && self.entries.iter().all(|(_, a)| !*a)
+    }
+
+    pub fn is_all(&self) -> bool {
+        self.entries.iter().all(|(_, a)| *a)
+    }
+
+    /// The backend's rule-text form, e.g. Windows' `-Profile Domain,Private`.
+    /// None when nothing is selected — the caller should disable the rule
+    /// instead of narrowing it to nothing.
+    pub fn to_arg(&self) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        if self.is_empty() {
+            return None;
+        }
+        if self.is_all() {
+            return Some(self.any_token.clone());
+        }
+        Some(
+            self.entries
+                .iter()
+                .filter(|(_, a)| *a)
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        )
+    }
+
+    /// Scopes present in `self` but dropped in `other` — what an edit removes.
+    pub fn removed_since(&self, other: &ScopeSet) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter(|(n, a)| *a && !other.is_active(n))
+            .map(|(n, _)| n.as_str())
+            .collect()
     }
 }
 
@@ -181,64 +328,6 @@ pub struct BaselineFlag {
     pub advice: &'static str,
 }
 
-/// The set of network profiles a rule applies to — the editable scope behind
-/// the clickable profile chips. "Any" expands to all three.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProfileSet {
-    pub domain: bool,
-    pub private: bool,
-    pub public: bool,
-}
-
-impl ProfileSet {
-    pub fn from_rule(r: &RuleInfo) -> ProfileSet {
-        let tags = r.profile_tags();
-        if tags == ["Any"] {
-            ProfileSet {
-                domain: true,
-                private: true,
-                public: true,
-            }
-        } else {
-            ProfileSet {
-                domain: tags.contains(&"Domain"),
-                private: tags.contains(&"Private"),
-                public: tags.contains(&"Public"),
-            }
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        !self.domain && !self.private && !self.public
-    }
-
-    pub fn is_all(&self) -> bool {
-        self.domain && self.private && self.public
-    }
-
-    /// The `-Profile` argument for Set-NetFirewallRule; None when empty
-    /// (caller should disable the rule instead).
-    pub fn to_profile_arg(self) -> Option<String> {
-        if self.is_empty() {
-            return None;
-        }
-        if self.is_all() {
-            return Some("Any".into());
-        }
-        let mut v = Vec::new();
-        if self.domain {
-            v.push("Domain");
-        }
-        if self.private {
-            v.push("Private");
-        }
-        if self.public {
-            v.push("Public");
-        }
-        Some(v.join(","))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,28 +351,131 @@ mod tests {
         }
     }
 
-    #[test]
-    fn profile_tags_parse_combinations() {
-        assert_eq!(rule_with_profile("Any").profile_tags(), vec!["Any"]);
-        assert_eq!(
-            rule_with_profile("Domain, Public").profile_tags(),
-            vec!["Domain", "Public"]
-        );
-        assert_eq!(rule_with_profile("Private").profile_tags(), vec!["Private"]);
+    fn sel(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
-    fn profile_filter_matches_selected_sets() {
+    fn scope_tags_parse_combinations() {
+        let v = ScopeVocabulary::windows_profiles();
+        assert_eq!(rule_with_profile("Any").scope_tags(&v), vec!["Any"]);
+        assert_eq!(
+            rule_with_profile("Domain, Public").scope_tags(&v),
+            vec!["Domain", "Public"]
+        );
+        assert_eq!(rule_with_profile("Private").scope_tags(&v), vec!["Private"]);
+    }
+
+    #[test]
+    fn scope_filter_matches_selected_sets() {
+        let v = ScopeVocabulary::windows_profiles();
         let dp = rule_with_profile("Domain, Private");
-        assert!(dp.applies_to_profile(true, false, false));
-        assert!(dp.applies_to_profile(false, true, false));
-        assert!(!dp.applies_to_profile(false, false, true));
+        assert!(dp.applies_to_scopes(&v, &sel(&["Domain"])));
+        assert!(dp.applies_to_scopes(&v, &sel(&["Private"])));
+        assert!(!dp.applies_to_scopes(&v, &sel(&["Public"])));
         // Any matches whenever something is selected, never when nothing is
         let any = rule_with_profile("Any");
-        assert!(any.applies_to_profile(false, false, true));
-        assert!(!any.applies_to_profile(false, false, false));
-        // unparseable scope must stay visible rather than silently vanish
+        assert!(any.applies_to_scopes(&v, &sel(&["Public"])));
+        assert!(!any.applies_to_scopes(&v, &sel(&[])));
+    }
+
+    #[test]
+    fn an_unreadable_scope_stays_visible() {
+        // A rule whose scope Firebreak cannot parse is still a live rule.
+        // Hiding it would let the user audit a firewall to "clean" while
+        // something they never saw is admitting traffic.
+        let v = ScopeVocabulary::windows_profiles();
         let odd = rule_with_profile("NotApplicable");
-        assert!(odd.applies_to_profile(true, false, false));
+        assert!(odd.applies_to_scopes(&v, &sel(&["Domain"])));
+    }
+
+    #[test]
+    fn a_backend_without_scopes_shows_every_rule() {
+        // ufw has no zones or profiles at all. An empty vocabulary must mean
+        // "always applies", not "applies nowhere" — the latter would render
+        // an entire Linux firewall invisible.
+        let v = ScopeVocabulary::none();
+        let r = rule_with_profile("Any");
+        assert!(r.applies_to_scopes(&v, &sel(&[])));
+        assert!(r.scope_tags(&v).is_empty());
+    }
+
+    #[test]
+    fn an_arbitrary_zone_vocabulary_works() {
+        // firewalld zones are user-defined and there can be any number.
+        let v = ScopeVocabulary {
+            names: vec!["FedoraWorkstation".into(), "public".into(), "dmz".into()],
+            any_token: "Any".into(),
+        };
+        let r = rule_with_profile("FedoraWorkstation");
+        assert_eq!(r.scope_tags(&v), vec!["FedoraWorkstation"]);
+        assert!(r.applies_to_scopes(&v, &sel(&["FedoraWorkstation"])));
+        assert!(!r.applies_to_scopes(&v, &sel(&["dmz"])));
+    }
+
+    #[test]
+    fn scope_set_round_trips_through_the_rule_text_form() {
+        let v = ScopeVocabulary::windows_profiles();
+        let mut s = ScopeSet::from_rule(&rule_with_profile("Any"), &v);
+        assert!(s.is_all());
+        assert_eq!(s.to_arg().as_deref(), Some("Any"));
+        s.set("Public", false);
+        assert_eq!(s.to_arg().as_deref(), Some("Domain,Private"));
+    }
+
+    #[test]
+    fn narrowing_to_nothing_has_no_rule_text_form() {
+        // An empty scope is not "Any". Writing it back as Any would widen a
+        // rule the user was trying to switch off — the caller must disable
+        // the rule instead.
+        let v = ScopeVocabulary::windows_profiles();
+        let mut s = ScopeSet::from_rule(&rule_with_profile("Any"), &v);
+        for name in ["Domain", "Private", "Public"] {
+            s.set(name, false);
+        }
+        assert!(s.is_empty());
+        assert_eq!(s.to_arg(), None);
+    }
+
+    #[test]
+    fn removed_since_reports_what_an_edit_drops() {
+        let v = ScopeVocabulary::windows_profiles();
+        let orig = ScopeSet::from_rule(&rule_with_profile("Any"), &v);
+        let mut target = orig.clone();
+        target.set("Public", false);
+        assert_eq!(orig.removed_since(&target), vec!["Public"]);
+        assert!(target.removed_since(&orig).is_empty());
+    }
+
+    #[test]
+    fn a_no_scope_backend_has_an_empty_editable_set() {
+        // ufw: nothing to render as chips, and nothing to write back.
+        let v = ScopeVocabulary::none();
+        let s = ScopeSet::from_rule(&rule_with_profile("Any"), &v);
+        assert_eq!(s.iter().count(), 0);
+        assert!(!s.is_empty(), "no scopes is not the same as none selected");
+        assert_eq!(s.to_arg(), None);
+    }
+
+    #[test]
+    fn an_unreadable_scope_expands_to_every_scope_not_none() {
+        // A rule whose scope will not parse is live somewhere. Treating it
+        // as empty would render it as "applies nowhere" and, worse, let an
+        // apply narrow it to nothing.
+        let v = ScopeVocabulary::windows_profiles();
+        let s = ScopeSet::from_rule(&rule_with_profile("NotApplicable"), &v);
+        assert!(s.is_all());
+    }
+
+    #[test]
+    fn zones_of_any_length_round_trip() {
+        let v = ScopeVocabulary {
+            names: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            any_token: "Any".into(),
+        };
+        let mut s = ScopeSet::from_rule(&rule_with_profile("b, d"), &v);
+        assert_eq!(s.to_arg().as_deref(), Some("b,d"));
+        s.toggle("a");
+        assert_eq!(s.to_arg().as_deref(), Some("a,b,d"));
     }
 }

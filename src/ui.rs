@@ -25,8 +25,8 @@ pub struct RuleRow {
     pub seen_apps: Vec<String>,
     pub listening: Vec<String>,
     pub target_enabled: bool,
-    /// intended profile scope (edited via the profile chips)
-    pub target_profiles: crate::model::ProfileSet,
+    /// intended scope (edited via the scope chips)
+    pub target_scopes: crate::model::ScopeSet,
     pub reviewed: ReviewState,
 }
 
@@ -62,12 +62,11 @@ impl RuleRow {
     fn is_zero_hit(&self) -> bool {
         self.total_hits() == 0
     }
-    fn orig_profiles(&self) -> crate::model::ProfileSet {
-        crate::model::ProfileSet::from_rule(&self.rule)
+    fn orig_scopes(&self) -> crate::model::ScopeSet {
+        crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
     }
     fn pending(&self) -> bool {
-        self.target_enabled != self.rule.is_enabled()
-            || self.target_profiles != self.orig_profiles()
+        self.target_enabled != self.rule.is_enabled() || self.target_scopes != self.orig_scopes()
     }
 }
 
@@ -140,18 +139,8 @@ impl PlannedChange {
     }
 }
 
-fn removed_labels(orig: crate::model::ProfileSet, target: crate::model::ProfileSet) -> String {
-    let mut removed = Vec::new();
-    if orig.domain && !target.domain {
-        removed.push("Domain");
-    }
-    if orig.private && !target.private {
-        removed.push("Private");
-    }
-    if orig.public && !target.public {
-        removed.push("Public");
-    }
-    removed.join(", ")
+fn removed_labels(orig: &crate::model::ScopeSet, target: &crate::model::ScopeSet) -> String {
+    orig.removed_since(target).join(", ")
 }
 
 /// Streamed apply progress — one message per step so the footer shows
@@ -301,8 +290,9 @@ impl App {
                 match a.effect {
                     ActionEffect::Disable => r.target_enabled,
                     ActionEffect::RemovePublic => {
-                        r.target_profiles.public
-                            && (r.target_profiles.domain || r.target_profiles.private)
+                        r.target_scopes.is_active("Public")
+                            && (r.target_scopes.is_active("Domain")
+                                || r.target_scopes.is_active("Private"))
                     }
                 }
             })
@@ -315,7 +305,7 @@ impl App {
         for i in self.action_pending(a) {
             match a.effect {
                 ActionEffect::Disable => self.rows[i].target_enabled = false,
-                ActionEffect::RemovePublic => self.rows[i].target_profiles.public = false,
+                ActionEffect::RemovePublic => self.rows[i].target_scopes.set("Public", false),
             }
         }
     }
@@ -423,9 +413,10 @@ pub struct App {
     only_zero_hit: bool,
     only_flagged: bool,
     hide_reviewed: bool,
-    show_domain: bool,
-    show_private: bool,
-    show_public: bool,
+    /// Scope filter: one entry per scope the host's backend defines, in
+    /// display order. Empty on a backend without scopes (ufw), where the
+    /// filter row simply does not render.
+    scope_filter: Vec<(String, bool)>,
     sort: Sort,
     sort_asc: bool,
     col_w: ColWidths,
@@ -470,9 +461,11 @@ impl App {
             only_zero_hit: false,
             only_flagged: false,
             hide_reviewed: true,
-            show_domain: true,
-            show_private: true,
-            show_public: true,
+            scope_filter: crate::model::vocabulary()
+                .names
+                .iter()
+                .map(|n| (n.clone(), true))
+                .collect(),
             sort: Sort::Hits,
             sort_asc: false, // hits descending by default (design)
             col_w: ColWidths::default(),
@@ -622,6 +615,7 @@ impl App {
 
     /// Analyze events from an imported .evtx file on a worker thread.
     /// `append` = add to the current import session; otherwise start fresh.
+    #[cfg(windows)]
     fn spawn_import(&mut self, path: PathBuf, append: bool, egui_ctx: egui::Context) {
         // stable per-process import scratch DB
         let db = self.import_db.clone().unwrap_or_else(|| {
@@ -654,6 +648,7 @@ impl App {
 
     /// Open a firebreak-export bundle (another device's rules + events) as a
     /// fresh read-only review session.
+    #[cfg(windows)]
     pub(crate) fn spawn_import_bundle(&mut self, path: PathBuf, egui_ctx: egui::Context) {
         let db = std::env::temp_dir().join(format!("firebreak-import-{}.db", std::process::id()));
         self.import_db = Some(db.clone());
@@ -746,7 +741,7 @@ impl App {
                 // demo: remove Public from a multi-profile rule + a disable
                 for r in app.rows.iter_mut() {
                     if r.rule.display_name.contains("File and Printer") {
-                        r.target_profiles.public = false;
+                        r.target_scopes.set("Public", false);
                     }
                 }
                 app.confirm_open = true;
@@ -854,27 +849,24 @@ impl App {
     fn planned_changes(&self) -> Vec<PlannedChange> {
         let mut out = Vec::new();
         for r in &self.rows {
-            let orig = r.orig_profiles();
+            let orig = r.orig_scopes();
             let was_enabled = r.rule.is_enabled();
             // whole-rule off wins over any profile edit
-            if !r.target_enabled || r.target_profiles.is_empty() {
+            if !r.target_enabled || r.target_scopes.is_empty() {
                 if was_enabled {
                     out.push(PlannedChange::new(r, ChangeKind::Disable));
                 }
                 continue;
             }
             // enabled target
-            if r.target_profiles != orig {
-                let arg = r
-                    .target_profiles
-                    .to_profile_arg()
-                    .unwrap_or_else(|| "Any".into());
+            if r.target_scopes != orig {
+                let arg = r.target_scopes.to_arg().unwrap_or_else(|| "Any".into());
                 out.push(PlannedChange::new(
                     r,
                     ChangeKind::Profiles {
                         arg,
                         was_enabled,
-                        removed: removed_labels(orig, r.target_profiles),
+                        removed: removed_labels(&orig, &r.target_scopes),
                     },
                 ));
             } else if !was_enabled {
@@ -916,7 +908,8 @@ impl App {
     fn revert_all(&mut self) {
         for r in &mut self.rows {
             r.target_enabled = r.rule.is_enabled();
-            r.target_profiles = crate::model::ProfileSet::from_rule(&r.rule);
+            r.target_scopes =
+                crate::model::ScopeSet::from_rule(&r.rule, crate::model::vocabulary());
         }
     }
 
@@ -1008,14 +1001,11 @@ impl App {
         // the applied reality (enabled state + profile scope)
         for name in newly_committed {
             if let Some(r) = self.rows.iter_mut().find(|r| r.rule.name == name) {
-                let effective_enabled = r.target_enabled && !r.target_profiles.is_empty();
+                let effective_enabled = r.target_enabled && !r.target_scopes.is_empty();
                 r.rule.enabled = if effective_enabled { "True" } else { "False" }.into();
                 r.target_enabled = effective_enabled;
                 if effective_enabled {
-                    r.rule.profile = r
-                        .target_profiles
-                        .to_profile_arg()
-                        .unwrap_or_else(|| "Any".into());
+                    r.rule.profile = r.target_scopes.to_arg().unwrap_or_else(|| "Any".into());
                 }
             }
         }
@@ -1045,6 +1035,17 @@ impl App {
 
     // ---- filtering ----
 
+    /// Scope names currently ticked in the filter row. An empty vocabulary
+    /// yields an empty list, which `applies_to_scopes` reads as "no scope
+    /// concept — show everything" rather than "nothing selected".
+    fn scope_filter_selected(&self) -> Vec<String> {
+        self.scope_filter
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
     fn visible(&self) -> Vec<usize> {
         let needle = self.filter_text.to_lowercase();
         let mut idx: Vec<usize> = (0..self.rows.len())
@@ -1073,7 +1074,7 @@ impl App {
                 }
                 if !r
                     .rule
-                    .applies_to_profile(self.show_domain, self.show_private, self.show_public)
+                    .applies_to_scopes(crate::model::vocabulary(), &self.scope_filter_selected())
                 {
                     return false;
                 }
@@ -1284,7 +1285,11 @@ mod helpers {
     }
 
     pub fn stroke_bottom(painter: &egui::Painter, rect: Rect, color: Color32) {
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, color));
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0_f32, color),
+        );
     }
 
     /// Clickable profile chip. `kept` = still in the rule's target scope;
@@ -1321,7 +1326,7 @@ mod helpers {
         let w = galley.size().x + 10.0;
         let h = 15.0;
         let r = Rect::from_min_size(top_left, Vec2::new(w, h));
-        ui.painter().rect(r, 0.0, bg, Stroke::new(1.0, border));
+        ui.painter().rect(r, 0.0, bg, Stroke::new(1.0_f32, border));
         ui.painter().galley(
             egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0),
             galley,
@@ -1332,7 +1337,7 @@ mod helpers {
             ui.painter().hline(
                 r.left() + 3.0..=r.right() - 3.0,
                 r.center().y,
-                Stroke::new(1.0, t::DISABLED()),
+                Stroke::new(1.0_f32, t::DISABLED()),
             );
         }
         let resp = if editable {
@@ -1344,7 +1349,7 @@ mod helpers {
             if re.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 ui.painter()
-                    .rect_stroke(r, 0.0, Stroke::new(1.0, t::ACCENT()));
+                    .rect_stroke(r, 0.0, Stroke::new(1.0_f32, t::ACCENT()));
             }
             Some(re)
         } else {

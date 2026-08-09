@@ -12,17 +12,24 @@
 //!   rules.json     — Vec<RuleInfo>, exactly the shape enumerate_rules parses
 //!   events.evtx    — Security log filtered to 5156/5157
 
-use anyhow::{anyhow, bail, Context, Result};
+#[cfg(any(windows, test))]
+use anyhow::anyhow;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+#[cfg(any(windows, test))]
+use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(windows, test))]
 use crate::model::RuleInfo;
 
 pub const SCHEMA: u32 = 1;
 
 /// The PowerShell fallback collector, kept embedded so the script a user
-/// hands out always matches the parser in their build.
+/// hands out always matches the parser in their build. Only the Windows UI
+/// hands it out.
+#[cfg(windows)]
 pub const COLLECT_PS1: &str = include_str!("../assets/collect.ps1");
 
 #[derive(Serialize, Deserialize)]
@@ -42,6 +49,10 @@ pub struct BundleContext {
     pub iface_profiles: std::collections::HashMap<String, String>,
 }
 
+/// A bundle opened for review. Parsing one is portable and stays
+/// unit-tested from any host; only *replaying* its events.evtx needs
+/// EvtQuery, so nothing outside Windows calls this in a real run.
+#[cfg(any(windows, test))]
 pub struct Bundle {
     pub manifest: Manifest,
     pub rules: Vec<RuleInfo>,
@@ -130,6 +141,7 @@ pub fn collect(out_zip: &Path, progress: &dyn Fn(&str)) -> Result<()> {
 
 /// Open a bundle: parse manifest/rules/context, extract events.evtx to a
 /// temp file for the event API.
+#[cfg(any(windows, test))]
 pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
     let file =
         std::fs::File::open(zip_path).with_context(|| format!("opening {}", zip_path.display()))?;
@@ -173,6 +185,7 @@ pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
     })
 }
 
+#[cfg(any(windows, test))]
 fn read_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
     let mut e = z
         .by_name(name)

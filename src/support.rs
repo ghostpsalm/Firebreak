@@ -152,7 +152,7 @@ pub fn export(out_path: &Path) -> Result<()> {
             f.filter_id,
             f.name,
             truncate(&f.provider_data_utf16, 120),
-            &f.provider_data_hex.chars().take(64).collect::<String>()
+            f.provider_data_hex.chars().take(64).collect::<String>()
         );
         shown += 1;
         if shown >= 15 {
@@ -175,7 +175,7 @@ pub fn export(out_path: &Path) -> Result<()> {
     let rule_map = filter_map::build_filter_rule_map(&filters, &rules);
     let mut via_pd = 0;
     let mut via_name = 0;
-    for (_, (_, via)) in rule_map.iter() {
+    for (_, via) in rule_map.values() {
         match via {
             MappedVia::ProviderData => via_pd += 1,
             MappedVia::DisplayName => via_name += 1,

@@ -187,6 +187,10 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
 /// dedicated import DB, never the live store). `reset_first` clears any prior
 /// import so a fresh single-file review doesn't concatenate; false appends
 /// (multi-machine review).
+///
+/// Windows-only: reading a .evtx needs the EvtQuery API, so there is no
+/// Linux path here. A Linux host reviews Linux evidence, not Windows events.
+#[cfg(windows)]
 pub fn import_evtx(
     scratch_db: &Path,
     evtx_path: &Path,
@@ -222,6 +226,8 @@ pub fn import_evtx(
 
 /// Import a firebreak-export bundle: the target's own rules and interface
 /// profiles ride along, so attribution reflects THAT device, not this one.
+/// Windows-only for the same reason as [`import_evtx`].
+#[cfg(windows)]
 pub fn import_bundle(
     scratch_db: &Path,
     zip_path: &Path,
@@ -254,6 +260,7 @@ pub fn import_bundle(
     result
 }
 
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 fn import_events(
     scratch_db: &Path,
@@ -270,7 +277,7 @@ fn import_events(
         store.reset_ingestion()?;
     }
 
-    let scope_index = crate::scope::ScopeIndex::build(&rules);
+    let scope_index = crate::scope::ScopeIndex::build(&rules, crate::model::vocabulary());
     let device_map = app_identity::device_path_map();
 
     store.begin()?;
@@ -428,7 +435,8 @@ fn build_rows(
                 .unwrap_or_default();
             let listening = listeners::listeners_for_rule(&rule, listener_list);
             let target_enabled = rule.is_enabled();
-            let target_profiles = crate::model::ProfileSet::from_rule(&rule);
+            let target_scopes =
+                crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary());
             // a review attests to a specific definition: on fingerprint
             // mismatch the mark goes stale and the rule resurfaces
             let review = match reviewed.get(&rule.name) {
@@ -443,7 +451,7 @@ fn build_rows(
                 seen_apps,
                 listening,
                 target_enabled,
-                target_profiles,
+                target_scopes,
                 reviewed: review,
             }
         })
@@ -574,7 +582,7 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
     // can credit several overlapping rules — correct for "is this rule
     // exercised". FilterOrigin is used only to label events that match no
     // rule scope (pure default/system traffic) in the Unattributed panel.
-    let scope_index = crate::scope::ScopeIndex::build(&rules);
+    let scope_index = crate::scope::ScopeIndex::build(&rules, crate::model::vocabulary());
     let iface_profiles = firewall_rules::interface_profile_map();
 
     // everything from here to the checkpoint advance is one transaction:

@@ -398,7 +398,8 @@ pub fn run() -> Result<()> {
             let flags = baseline_checks::flags_for(&rule);
             let listening = listeners::listeners_for_rule(&rule, &mock_listeners);
             let target_enabled = pending.unwrap_or_else(|| rule.is_enabled());
-            let target_profiles = crate::model::ProfileSet::from_rule(&rule);
+            let target_scopes =
+                crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary());
             // demo reviewed states: one verified, one stale (rule changed
             // since it was checked)
             let reviewed = match rule.display_name.as_str() {
@@ -413,7 +414,7 @@ pub fn run() -> Result<()> {
                 seen_apps: apps.into_iter().map(Into::into).collect(),
                 listening,
                 target_enabled,
-                target_profiles,
+                target_scopes,
                 reviewed,
             }
         })

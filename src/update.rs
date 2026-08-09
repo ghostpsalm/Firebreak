@@ -23,6 +23,7 @@ pub fn download_url() -> String {
 }
 
 /// Detached minisign signature published next to the asset.
+#[cfg(windows)]
 pub fn signature_url() -> String {
     format!("{}.minisig", download_url())
 }

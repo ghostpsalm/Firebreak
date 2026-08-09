@@ -9,6 +9,8 @@ mod elevation;
 mod event_query;
 mod filter_map;
 mod firewall_rules;
+#[cfg(target_os = "linux")]
+mod linux;
 mod listeners;
 mod model;
 mod pipeline;
@@ -91,9 +93,24 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--help" | "-h" => {
                 println!(
                     "Firebreak — Observe first. Enforce with confidence.\n\
-                     Windows Firewall rule-usage auditor.\n\n\
+                     Firewall rule-usage auditor for Windows and Linux.\n\n\
                      USAGE:\n\
                      \x20 firebreak [OPTIONS]\n\n\
+                     ON LINUX: runs as root, prints a rule-usage report and exits.\n\
+                     \x20 ufw       the kernel already counts every rule, so there is nothing\n\
+                     \x20           to enable and no waiting period — the first run answers.\n\
+                     \x20 firewalld its nftables table is owner-locked and carries no counters,\n\
+                     \x20           so --enable-only installs Firebreak's own shadow counter\n\
+                     \x20           table and --restore-audit removes it again. A plain run\n\
+                     \x20           never instruments the host.\n\
+                     \x20 nftables  reads each rule's own counter, where the ruleset has one.\n\
+                     \x20           --enable-only adds counters to the rules that don't (the\n\
+                     \x20           ruleset is backed up first and every edit verified);\n\
+                     \x20           --restore-audit puts the ruleset back.\n\
+                     \x20 --reset   clear collected totals and start counting over.\n\
+                     \x20 --db      database path (default /var/lib/firebreak/firebreak.db)\n\
+                     \x20 The remaining options below are Windows-only.\n\n\
+                     ON WINDOWS:\n\
                      Run without arguments for the app: it boots to the rule table, offers an\n\
                      'Enable connection auditing' button on first run, and on later runs\n\
                      ingests new 5156/5157 events and correlates them to firewall rules.\n\
@@ -154,6 +171,70 @@ fn main() -> Result<()> {
     if args.ui_preview {
         return preview::run();
     }
+
+    // On Linux, take the counter-backend path when one of the supported
+    // firewall managers is actually in charge. Otherwise fall through to the
+    // shared flow, which still serves --ui-preview and reports honestly that
+    // the Windows evidence sources are unavailable here.
+    #[cfg(target_os = "linux")]
+    {
+        if !elevation::is_elevated() {
+            bail!(
+                "firebreak must run as root on Linux — the firewall's rule files, its packet \
+                 counters and /proc process attribution are all root-only. Re-run with sudo, \
+                 or use --ui-preview to look at the interface unprivileged."
+            );
+        }
+        if let Some(backend) = linux::detect()? {
+            return run_linux(&args, backend);
+        }
+        eprintln!(
+            "No supported Linux firewall backend is active (Firebreak supports ufw and \
+             firewalld; raw nftables is not wired up yet)."
+        );
+    }
+
+    run_windows(args)
+}
+
+/// The Linux run. Deliberately not the Windows flow with substitutions: on
+/// ufw there is no audit policy to enable, no event log to checkpoint and no
+/// collection clock to start, because the kernel is already counting, so the
+/// first run has a real answer. firewalld does need instrumenting, and there
+/// the existing collection flags carry over exactly:
+///
+/// * `--enable-only` installs the shadow counter table and exits, i.e. starts
+///   the clock — the same job it does on Windows.
+/// * `--restore-audit` removes it again, leaving collected totals intact.
+#[cfg(target_os = "linux")]
+fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
+    // Declare the host's scope vocabulary before anything renders a rule.
+    model::set_vocabulary(backend.scope_vocabulary());
+
+    if args.enable_only {
+        println!("{}", linux::enable_collection(backend, &args.db_path)?);
+        return Ok(());
+    }
+    if args.restore_audit {
+        println!("{}", linux::stop_collection(backend, &args.db_path)?);
+        return Ok(());
+    }
+
+    let store = Store::open(&args.db_path)?;
+    if args.reset {
+        store.reset_counter_state()?;
+        println!("Cleared collected rule usage. Counting restarts from the next run.");
+        return Ok(());
+    }
+    let prior = store.load_counter_state()?;
+    let (report, next) = linux::analyze(backend, &prior)?;
+    store.save_counter_state(&next)?;
+    print_linux_report(backend, &report);
+    Ok(())
+}
+
+fn run_windows(args: Args) -> Result<()> {
+    model::set_vocabulary(model::ScopeVocabulary::windows_profiles());
 
     // clear a leftover exe image from a prior self-update
     update::cleanup_old();
@@ -253,39 +334,86 @@ fn dump_filters() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_args_from;
-
-    fn parse(argv: &[&str]) -> super::Args {
-        parse_args_from(argv.iter().map(|s| (*s).to_string()))
+/// Text report for a counter-based backend. Unused, used and unmeasurable
+/// are three separate sections on purpose: folding "we could not read this
+/// rule's counter" into the zero-hit list would invite the user to delete a
+/// rule Firebreak never actually observed.
+#[cfg(target_os = "linux")]
+fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
+    println!(
+        "Backend: {} — {}",
+        backend.label(),
+        backend.evidence_summary()
+    );
+    if backend.needs_instrumentation() {
+        println!("Collection: opt-in (--enable-only), removable (--restore-audit)");
     }
 
-    #[test]
-    fn collect_without_path_defaults() {
-        let a = parse(&["--collect"]);
-        assert_eq!(a.collect, Some(None));
+    let unused = report.unused();
+    // A never-matched rule that still has something listening behind it is a
+    // different conversation from one with nothing there: the first may just
+    // be waiting for its first connection.
+    let (idle, empty): (Vec<&&linux::RuleUsageRow>, Vec<&&linux::RuleUsageRow>) =
+        unused.iter().partition(|r| !r.listening.is_empty());
+    println!(
+        "\n=== Never matched, nothing listening ({}) — strongest disable candidates ===",
+        empty.len()
+    );
+    for row in &empty {
+        println!(
+            "  {}  [{} {}]",
+            row.rule.display_name, row.rule.direction, row.rule.action
+        );
     }
 
-    #[test]
-    fn collect_with_path_takes_it() {
-        let a = parse(&["--collect", r"C:\out.zip"]);
-        assert_eq!(a.collect, Some(Some(r"C:\out.zip".into())));
+    if !idle.is_empty() {
+        println!(
+            "\n=== Never matched, but something is listening ({}) ===",
+            idle.len()
+        );
+        println!("(the port is open and a process is behind it — it may simply be idle)");
+        for row in &idle {
+            println!(
+                "  {}  <- {}",
+                row.rule.display_name,
+                row.listening.join(", ")
+            );
+        }
     }
 
-    #[test]
-    fn collect_does_not_swallow_following_flag() {
-        // regression for F2: `--collect --enable-only` must run both, not
-        // silently drop --enable-only while peeking for a path
-        let a = parse(&["--collect", "--enable-only"]);
-        assert_eq!(a.collect, Some(None));
-        assert!(a.enable_only);
+    let mut used: Vec<_> = report
+        .rows
+        .iter()
+        .filter(|r| r.hits.unwrap_or(0) > 0)
+        .collect();
+    used.sort_by_key(|r| std::cmp::Reverse(r.hits.unwrap_or(0)));
+    println!("\n=== Matched (most first) ===");
+    for row in used {
+        let behind = if row.listening.is_empty() {
+            String::new()
+        } else {
+            format!("  <- {}", row.listening.join(", "))
+        };
+        println!(
+            "  {:>12} packets  {}{behind}",
+            row.hits.unwrap_or(0),
+            row.rule.display_name
+        );
     }
 
-    #[test]
-    fn db_takes_a_path() {
-        let a = parse(&["--db", r"D:\fb.db"]);
-        assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
+    if let Some(note) = &report.note {
+        println!("\nNote: {note}");
+    }
+
+    if !report.unmeasurable.is_empty() {
+        println!(
+            "\n=== Not measurable ({}) — active, but with no usable hit count ===",
+            report.unmeasurable.len()
+        );
+        println!("(these are NOT unused; Firebreak simply cannot count them)");
+        for (id, why) in &report.unmeasurable {
+            println!("  {id}\n      {why}");
+        }
     }
 }
 
@@ -384,4 +512,40 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_args_from;
+
+    fn parse(argv: &[&str]) -> super::Args {
+        parse_args_from(argv.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn collect_without_path_defaults() {
+        let a = parse(&["--collect"]);
+        assert_eq!(a.collect, Some(None));
+    }
+
+    #[test]
+    fn collect_with_path_takes_it() {
+        let a = parse(&["--collect", r"C:\out.zip"]);
+        assert_eq!(a.collect, Some(Some(r"C:\out.zip".into())));
+    }
+
+    #[test]
+    fn collect_does_not_swallow_following_flag() {
+        // regression for F2: `--collect --enable-only` must run both, not
+        // silently drop --enable-only while peeking for a path
+        let a = parse(&["--collect", "--enable-only"]);
+        assert_eq!(a.collect, Some(None));
+        assert!(a.enable_only);
+    }
+
+    #[test]
+    fn db_takes_a_path() {
+        let a = parse(&["--db", r"D:\fb.db"]);
+        assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
+    }
 }

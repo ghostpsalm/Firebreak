@@ -13,11 +13,20 @@ pub struct Store {
 /// per-profile counts. v4 = disabled rules excluded from attribution (#1).
 const MODEL_VERSION: &str = "4";
 
-/// Default DB location: %ProgramData%\firebreak\firebreak.db (survives per-user
-/// profile churn; tool runs elevated anyway).
+/// Default DB location. Windows: %ProgramData%\firebreak (survives per-user
+/// profile churn; the tool runs elevated anyway). Linux: /var/lib/firebreak,
+/// the FHS home for state a system service accumulates. Both are secured by
+/// [`crate::secure_dir`] before use.
 pub fn default_db_path() -> PathBuf {
-    let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
-    Path::new(&base).join("firebreak").join("firebreak.db")
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/var/lib/firebreak").join("firebreak.db")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
+        Path::new(&base).join("firebreak").join("firebreak.db")
+    }
 }
 
 impl Store {
@@ -102,6 +111,16 @@ impl Store {
                 rule_id     TEXT PRIMARY KEY,
                 fingerprint TEXT NOT NULL,
                 reviewed_at TEXT NOT NULL
+            );
+
+            -- Linux counter backends only. A kernel packet counter is a
+            -- gauge that resets (reboot, firewall reload), so a rule's real
+            -- total is everything banked from previous counter lifetimes
+            -- plus the current reading. See linux::counters.
+            CREATE TABLE IF NOT EXISTS rule_counter (
+                rule_id     TEXT PRIMARY KEY,
+                accumulated INTEGER NOT NULL DEFAULT 0,
+                last_raw    INTEGER NOT NULL DEFAULT 0
             );
             "#,
         )?;
@@ -206,6 +225,82 @@ impl Store {
     }
 
     /// rule_id -> (fingerprint, reviewed_at)
+    /// Read back the counter bookkeeping for a Linux counter backend.
+    #[cfg(target_os = "linux")]
+    pub fn load_counter_state(&self) -> Result<crate::linux::PriorState> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT rule_id, accumulated, last_raw FROM rule_counter")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                crate::linux::counters::CounterState {
+                    accumulated: r.get(1)?,
+                    last_raw: r.get(2)?,
+                },
+            ))
+        })?;
+        let mut counters = std::collections::BTreeMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            counters.insert(k, v);
+        }
+        Ok(crate::linux::PriorState {
+            generation: self.get_meta("counter_generation")?,
+            counters,
+        })
+    }
+
+    /// Drop all counter bookkeeping so totals restart. The generation goes
+    /// with it — leaving it behind would make the next run compare fresh
+    /// readings against a lifetime that no longer has any banked packets.
+    #[cfg(target_os = "linux")]
+    pub fn reset_counter_state(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM rule_counter;
+             DELETE FROM meta WHERE key = 'counter_generation';",
+        )?;
+        Ok(())
+    }
+
+    /// Persist counter bookkeeping. Written as one transaction with the
+    /// generation token: a generation saved without its counters (or the
+    /// reverse) would make the next run mis-detect a reset and either bank a
+    /// phantom lifetime or silently drop a real one.
+    #[cfg(target_os = "linux")]
+    pub fn save_counter_state(&self, state: &crate::linux::PriorState) -> Result<()> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> Result<()> {
+            // rules deleted from the firewall must not keep reporting totals
+            self.conn.execute("DELETE FROM rule_counter", [])?;
+            for (rule_id, c) in &state.counters {
+                self.conn.execute(
+                    "INSERT INTO rule_counter (rule_id, accumulated, last_raw)
+                     VALUES (?1, ?2, ?3)",
+                    params![rule_id, c.accumulated, c.last_raw],
+                )?;
+            }
+            if let Some(g) = &state.generation {
+                self.conn.execute(
+                    "INSERT INTO meta (key, value) VALUES ('counter_generation', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![g],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
     pub fn load_reviewed(&self) -> Result<std::collections::HashMap<String, (String, String)>> {
         let mut stmt = self
             .conn
