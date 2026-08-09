@@ -1187,12 +1187,24 @@ fn filter_bar(app: &mut App, ctx: &egui::Context) {
                     ("Flagged", &mut app.only_flagged, true, "Show only rules with a security advisory (e.g. RDP, SMB-inbound, broad allow, mDNS)"),
                     ("Hide reviewed", &mut app.hide_reviewed, true, "Hide rules you've marked as reviewed (the circle in the right-most column) — tick rules off to work the list down to zero"),
                 ]);
-                ui.add_space(4.0);
-                segmented_toggles(ui, &mut [
-                    ("Domain", &mut app.show_domain, true, "Include rules active on the Domain profile (corporate/AD network)"),
-                    ("Private", &mut app.show_private, true, "Include rules active on the Private profile (home/trusted network)"),
-                    ("Public", &mut app.show_public, true, "Include rules active on the Public profile (untrusted/public network)"),
-                ]);
+                // Scope filter, driven by whatever the host's backend
+                // defines. Nothing renders on a backend without scopes.
+                if !app.scope_filter.is_empty() {
+                    ui.add_space(4.0);
+                    let mut segments: Vec<(&str, &mut bool, bool, String)> = app
+                        .scope_filter
+                        .iter_mut()
+                        .map(|(name, on)| {
+                            let tip = scope_tooltip(name);
+                            (name.as_str(), on, true, tip)
+                        })
+                        .collect();
+                    let mut cells: Vec<(&str, &mut bool, bool, &str)> = segments
+                        .iter_mut()
+                        .map(|(n, on, e, tip)| (*n, &mut **on, *e, tip.as_str()))
+                        .collect();
+                    segmented_toggles(ui, &mut cells);
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let total = app.rows.len();
@@ -1262,6 +1274,18 @@ fn segment_cell(
 }
 
 /// Segmented multi-toggle (each cell independently on/off).
+/// Tooltip for a scope filter chip. The Windows profiles get their real
+/// meanings; anything else (a firewalld zone) is named but not editorialised
+/// about, since only the admin knows what their zone is for.
+fn scope_tooltip(name: &str) -> String {
+    match name {
+        "Domain" => "Include rules active on the Domain profile (corporate/AD network)".into(),
+        "Private" => "Include rules active on the Private profile (home/trusted network)".into(),
+        "Public" => "Include rules active on the Public profile (untrusted/public network)".into(),
+        other => format!("Include rules active in the {other} zone"),
+    }
+}
+
 fn segmented_toggles(ui: &mut egui::Ui, segs: &mut [(&str, &mut bool, bool, &str)]) {
     let prev = ui.spacing().item_spacing;
     ui.spacing_mut().item_spacing.x = 0.0;
@@ -1723,7 +1747,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     // checkbox — indeterminate when the rule stays on but its profile scope
     // was narrowed
     let partial =
-        r.target_enabled && !r.target_profiles.is_empty() && r.target_profiles != r.orig_profiles();
+        r.target_enabled && !r.target_scopes.is_empty() && r.target_scopes != r.orig_scopes();
     let cb_rect = Rect::from_center_size(
         Pos2::new(cols.check + 17.0, rect.center().y),
         Vec2::splat(13.0),
@@ -1800,31 +1824,29 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         CELL_PAD,
     );
 
-    // profiles chips — clickable to toggle a profile off/on for this rule
-    let orig = r.orig_profiles();
-    let target = r.target_profiles;
-    let mut clicked_profile: Option<u8> = None;
+    // scope chips — clickable to toggle a scope off/on for this rule. The
+    // set is whatever the host's backend defines: three network profiles on
+    // Windows, N zones on firewalld, none at all on ufw (where this simply
+    // renders nothing).
+    let orig = r.orig_scopes();
+    let mut clicked_scope: Option<String> = None;
     let mut cx = cols.profiles.0 + CELL_PAD;
     let editable = app.apply.is_none() && app.phase == Phase::Ready;
-    for (bit, present, kept, label) in [
-        (0u8, orig.domain, target.domain, "Domain"),
-        (1, orig.private, target.private, "Private"),
-        (2, orig.public, target.public, "Public"),
-    ] {
+    for (slot, (name, present)) in orig.iter().enumerate() {
         if !present {
             continue;
         }
         let (w, resp) = interactive_chip(
             ui,
             Pos2::new(cx, rect.center().y - 7.5),
-            label,
-            kept,
+            name,
+            r.target_scopes.is_active(name),
             editable,
-            (ri, bit),
+            (ri, slot as u8),
         );
         cx += w;
         if resp.is_some_and(|r| r.clicked()) {
-            clicked_profile = Some(bit);
+            clicked_scope = Some(name.to_string());
         }
     }
 
@@ -2049,13 +2071,8 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     );
 
     // interactions
-    if let Some(bit) = clicked_profile {
-        let p = &mut app.rows[ri].target_profiles;
-        match bit {
-            0 => p.domain = !p.domain,
-            1 => p.private = !p.private,
-            _ => p.public = !p.public,
-        }
+    if let Some(name) = clicked_scope {
+        app.rows[ri].target_scopes.toggle(&name);
     } else if cb_resp.clicked() && app.apply.is_none() {
         app.rows[ri].target_enabled = !app.rows[ri].target_enabled;
     } else if rv_resp.clicked() {
@@ -2266,9 +2283,9 @@ fn empty_state(app: &mut App, ui: &mut egui::Ui) {
             app.only_enabled = false;
             app.only_zero_hit = false;
             app.only_flagged = false;
-            app.show_domain = true;
-            app.show_private = true;
-            app.show_public = true;
+            for (_, on) in app.scope_filter.iter_mut() {
+                *on = true;
+            }
         }
     });
 }

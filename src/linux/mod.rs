@@ -43,6 +43,15 @@ impl Backend {
             Backend::Ufw => false,
         }
     }
+
+    /// How this backend divides rules into scopes. ufw does not: every rule
+    /// applies unconditionally, so the scope column and filter disappear
+    /// rather than showing three Windows profiles that mean nothing here.
+    pub fn scope_vocabulary(self) -> crate::model::ScopeVocabulary {
+        match self {
+            Backend::Ufw => crate::model::ScopeVocabulary::none(),
+        }
+    }
 }
 
 /// Work out which backend is in charge.

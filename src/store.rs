@@ -13,11 +13,20 @@ pub struct Store {
 /// per-profile counts. v4 = disabled rules excluded from attribution (#1).
 const MODEL_VERSION: &str = "4";
 
-/// Default DB location: %ProgramData%\firebreak\firebreak.db (survives per-user
-/// profile churn; tool runs elevated anyway).
+/// Default DB location. Windows: %ProgramData%\firebreak (survives per-user
+/// profile churn; the tool runs elevated anyway). Linux: /var/lib/firebreak,
+/// the FHS home for state a system service accumulates. Both are secured by
+/// [`crate::secure_dir`] before use.
 pub fn default_db_path() -> PathBuf {
-    let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
-    Path::new(&base).join("firebreak").join("firebreak.db")
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/var/lib/firebreak").join("firebreak.db")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
+        Path::new(&base).join("firebreak").join("firebreak.db")
+    }
 }
 
 impl Store {

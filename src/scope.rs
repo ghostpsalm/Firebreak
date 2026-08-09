@@ -89,7 +89,7 @@ struct RuleScope {
 }
 
 impl RuleScope {
-    fn from_rule(r: &RuleInfo) -> Option<RuleScope> {
+    fn from_rule(r: &RuleInfo, vocab: &crate::model::ScopeVocabulary) -> Option<RuleScope> {
         // A disabled rule is never loaded into WFP, so it cannot decide any
         // connection — crediting it with a hit would be a false attribution.
         // Exclude it from the index entirely (matches the module doc: we
@@ -121,13 +121,17 @@ impl RuleScope {
             .as_deref()
             .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("any"))
             .map(|p| basename(&expand_program(p)).to_lowercase());
-        let tags = r.profile_tags();
-        let profiles = if tags == ["Any"] {
+        // Per-profile attribution is a Windows notion: events carry an
+        // interface index that maps to a network profile. Backends whose
+        // scope vocabulary is empty (ufw) or unrelated to interfaces
+        // (firewalld zones) constrain nothing here.
+        let tags = r.scope_tags(vocab);
+        let profiles = if tags.is_empty() || tags == [vocab.any_token.clone()] {
             None
         } else {
             let set: HashSet<Profile> = tags
                 .iter()
-                .filter_map(|t| match *t {
+                .filter_map(|t| match t.as_str() {
                     "Domain" => Some(Profile::Domain),
                     "Private" => Some(Profile::Private),
                     "Public" => Some(Profile::Public),
@@ -243,12 +247,12 @@ pub struct ScopeIndex {
 }
 
 impl ScopeIndex {
-    pub fn build(rules: &[RuleInfo]) -> ScopeIndex {
+    pub fn build(rules: &[RuleInfo], vocab: &crate::model::ScopeVocabulary) -> ScopeIndex {
         let mut scopes = Vec::new();
         let mut by_proto: HashMap<(bool, u32), Vec<usize>> = HashMap::new();
         let mut any_proto: HashMap<bool, Vec<usize>> = HashMap::new();
         for r in rules {
-            if let Some(s) = RuleScope::from_rule(r) {
+            if let Some(s) = RuleScope::from_rule(r, vocab) {
                 if !s.is_attributable() {
                     continue; // Any/Any/Any rule — would match everything
                 }
@@ -349,7 +353,7 @@ mod tests {
             rule("mDNS", "Inbound", Some("UDP"), Some("5353"), None, None),
             rule("RDP", "Inbound", Some("TCP"), Some("3389"), None, None),
         ];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let e = ev("Inbound", 17, "5353", "5353", r"\device\hd\svchost.exe");
         let c = conn(&e, r"C:\windows\system32\svchost.exe");
         assert_eq!(idx.matching_rules(&c), vec!["mDNS"]);
@@ -360,7 +364,7 @@ mod tests {
         // Any/Any/Any inbound rule (a Store-app rule) must not match every
         // connection — regression for the 30-identical-rows bug
         let rules = vec![rule("Windows Camera", "Inbound", None, None, None, None)];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let c = conn(
             &ev("Inbound", 6, "40000", "443", "chrome.exe"),
             "chrome.exe",
@@ -374,7 +378,7 @@ mod tests {
         // even when its scope matches the connection exactly (regression: F1)
         let mut r = rule("Old RDP", "Inbound", Some("TCP"), Some("3389"), None, None);
         r.enabled = "False".into();
-        let idx = ScopeIndex::build(&[r]);
+        let idx = ScopeIndex::build(&[r], &crate::model::ScopeVocabulary::windows_profiles());
         let c = conn(
             &ev("Inbound", 6, "40000", "3389", "svchost.exe"),
             "svchost.exe",
@@ -384,7 +388,7 @@ mod tests {
         // not the scope
         let mut r2 = rule("RDP", "Inbound", Some("TCP"), Some("3389"), None, None);
         r2.enabled = "True".into();
-        let idx2 = ScopeIndex::build(&[r2]);
+        let idx2 = ScopeIndex::build(&[r2], &crate::model::ScopeVocabulary::windows_profiles());
         assert_eq!(idx2.matching_rules(&c), vec!["RDP"]);
     }
 
@@ -398,7 +402,7 @@ mod tests {
             None,
             None,
         )];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let c = conn(&ev("Inbound", 1, "0", "0", "System"), "System");
         assert_eq!(idx.matching_rules(&c), vec!["Echo Request v4"]);
     }
@@ -413,7 +417,7 @@ mod tests {
             None,
             Some(r"C:\x\svchost.exe"),
         )];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let miss = conn(
             &ev("Inbound", 6, "40000", "135", "svchost.exe"),
             r"C:\x\svchost.exe",
@@ -436,7 +440,7 @@ mod tests {
             Some("53"),
             None,
         )];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let c = conn(
             &ev("Outbound", 17, "50000", "53", "svchost.exe"),
             "svchost.exe",
@@ -455,7 +459,7 @@ mod tests {
             None,
         );
         r.profile = "Domain".into();
-        let idx = ScopeIndex::build(&[r]);
+        let idx = ScopeIndex::build(&[r], &crate::model::ScopeVocabulary::windows_profiles());
         let mut e = ev("Inbound", 6, "40000", "3389", "svchost.exe");
         e.interface_index = 5;
         // interface 5 is Public → Domain-only rule must not match
@@ -478,7 +482,7 @@ mod tests {
             None,
             None,
         )];
-        let idx = ScopeIndex::build(&rules);
+        let idx = ScopeIndex::build(&rules, &crate::model::ScopeVocabulary::windows_profiles());
         let c = conn(
             &ev("Outbound", 17, "5353", "5353", "svchost.exe"),
             "svchost.exe",

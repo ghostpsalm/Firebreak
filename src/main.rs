@@ -193,6 +193,8 @@ fn main() -> Result<()> {
 /// first run has a real answer.
 #[cfg(target_os = "linux")]
 fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
+    // Declare the host's scope vocabulary before anything renders a rule.
+    model::set_vocabulary(backend.scope_vocabulary());
     let store = Store::open(&args.db_path)?;
     let prior = store.load_counter_state()?;
     let (report, next) = linux::analyze(backend, &prior)?;
@@ -202,6 +204,8 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
 }
 
 fn run_windows(args: Args) -> Result<()> {
+    model::set_vocabulary(model::ScopeVocabulary::windows_profiles());
+
     // clear a leftover exe image from a prior self-update
     update::cleanup_old();
 

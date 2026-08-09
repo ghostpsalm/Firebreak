@@ -35,14 +35,19 @@ pub fn is_elevated() -> bool {
 /// one call; the effective UID is the second field of the `Uid:` line.
 #[cfg(target_os = "linux")]
 pub fn is_elevated() -> bool {
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
-        return false;
-    };
-    status
+    effective_uid() == Some(0)
+}
+
+/// This process's effective UID. `None` if /proc is unreadable, which
+/// callers must treat as "unknown", never as "root".
+#[cfg(unix)]
+pub fn effective_uid() -> Option<u32> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
         .lines()
         .find_map(|l| l.strip_prefix("Uid:"))
         .and_then(|rest| rest.split_whitespace().nth(1))
-        .is_some_and(|euid| euid == "0")
+        .and_then(|euid| euid.parse().ok())
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
