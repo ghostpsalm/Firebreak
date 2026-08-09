@@ -453,6 +453,9 @@ fn build_rows(
                 target_enabled,
                 target_scopes,
                 reviewed: review,
+                // Windows ingests events: every rule's traffic is measured,
+                // even when the answer is none.
+                hits_known: true,
             }
         })
         .collect()
@@ -484,6 +487,10 @@ fn build_unmatched(store: &Store) -> Result<Vec<UnmatchedRow>> {
 /// Instant startup: build a result from the cached rule set + whatever the
 /// store already holds, without the (slow) live rule enumeration. Returns
 /// None if there's no cache yet. A full analyze() refresh follows.
+///
+/// Windows-only: on Linux the UI reads counters through `linux::bridge`,
+/// where reading them *is* the fast path and there is nothing to cache.
+#[cfg(not(target_os = "linux"))]
 pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
     let rules = firewall_rules::load_rules_cache()?;
     let store = Store::open(db_path).ok()?;
@@ -510,6 +517,7 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
 
 /// The rule table without any usage data — for the first-run screen before
 /// auditing is enabled (rules + scope + current listeners are still useful).
+#[cfg(not(target_os = "linux"))]
 pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
     progress("Enumerating firewall rules…");
     let rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;

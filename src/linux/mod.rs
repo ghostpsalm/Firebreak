@@ -17,6 +17,7 @@
 //! there is no collection clock to start and no waiting period before the
 //! first useful answer.
 
+pub mod bridge;
 pub mod counters;
 pub mod firewalld;
 pub mod nftables;
@@ -171,6 +172,20 @@ pub fn analyze(backend: Backend, prior: &PriorState) -> Result<(Report, PriorSta
         Backend::Ufw => analyze_ufw(prior),
         Backend::Firewalld => analyze_firewalld(prior),
         Backend::Nftables => analyze_nftables(prior),
+    }
+}
+
+/// Is this backend's instrumentation currently in place? Meaningless for a
+/// backend that needs none, which reports true.
+pub fn collection_active(backend: Backend) -> bool {
+    match backend {
+        Backend::Ufw => true,
+        Backend::Firewalld => firewalld::table_exists(),
+        // Partial by nature: some rules may carry counters the admin wrote.
+        // "Active" here means Firebreak has something to read at all.
+        Backend::Nftables => nftables::read_rules()
+            .map(|rules| rules.iter().any(|r| r.counter.is_some()))
+            .unwrap_or(false),
     }
 }
 

@@ -10,7 +10,17 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::listeners::Listener;
 use crate::model::{BaselineFlag, RuleInfo, RuleUsage};
-use crate::pipeline::{self, AnalysisResult, UnmatchedRow};
+#[cfg(not(target_os = "linux"))]
+use crate::pipeline;
+use crate::pipeline::{AnalysisResult, UnmatchedRow};
+
+/// Where the UI worker gets its data. Windows ingests audit events through
+/// `pipeline`; Linux reads rule counters through `linux::bridge`. Both expose
+/// the same four entry points, so the worker below is written once.
+#[cfg(target_os = "linux")]
+use crate::linux::bridge as backend;
+#[cfg(not(target_os = "linux"))]
+use crate::pipeline as backend;
 use crate::theme::{self as t};
 use crate::{firewall_rules, time_util};
 
@@ -28,6 +38,11 @@ pub struct RuleRow {
     /// intended scope (edited via the scope chips)
     pub target_scopes: crate::model::ScopeSet,
     pub reviewed: ReviewState,
+    /// Whether this rule's traffic was actually measured. False means the
+    /// backend could not count it — a firewalld rich rule, an nft rule with
+    /// no counter. It must never render or filter as "zero hits", because
+    /// zero invites deleting the rule and unknown does not.
+    pub hits_known: bool,
 }
 
 /// User attestation state for a rule. `Stale` = it was reviewed, but the
@@ -59,8 +74,10 @@ impl RuleRow {
             .map(|u| u.allow_count + u.block_count)
             .unwrap_or(0)
     }
+    /// A genuine disable candidate: measured, and never matched. A rule
+    /// nobody counted is not zero-hit, it is unknown.
     fn is_zero_hit(&self) -> bool {
-        self.total_hits() == 0
+        self.hits_known && self.total_hits() == 0
     }
     fn orig_scopes(&self) -> crate::model::ScopeSet {
         crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
@@ -521,8 +538,12 @@ impl App {
             };
             // audit state first — cheap, and lets the header settle before
             // the slower rule enumeration
-            progress("Checking Windows audit policy…");
-            let enabled = match pipeline::audit_enabled() {
+            progress(if cfg!(target_os = "linux") {
+                "Detecting firewall backend…"
+            } else {
+                "Checking Windows audit policy…"
+            });
+            let enabled = match backend::audit_enabled() {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = tx.send(WorkerMsg::Failed(format!("{e:#}")));
@@ -535,17 +556,17 @@ impl App {
 
             if enabled {
                 // instant paint from cached rules while the live query runs
-                if let Some(prelim) = pipeline::quick_cached_result(&db_path) {
+                if let Some(prelim) = backend::quick_cached_result(&db_path) {
                     let _ = tx.send(WorkerMsg::Preliminary(Box::new(prelim)));
                     egui_ctx.request_repaint();
                 }
-                let msg = match pipeline::analyze(&db_path, &progress) {
+                let msg = match backend::analyze(&db_path, &progress) {
                     Ok(r) => WorkerMsg::Ready(Box::new(r)),
                     Err(e) => WorkerMsg::Failed(format!("{e:#}")),
                 };
                 let _ = tx.send(msg);
             } else {
-                let msg = match pipeline::rules_only(&progress) {
+                let msg = match backend::rules_only(&progress) {
                     Ok(r) => WorkerMsg::NeedsEnable(Box::new(r)),
                     Err(e) => WorkerMsg::Failed(format!("{e:#}")),
                 };
@@ -770,8 +791,8 @@ impl App {
                     ctx.request_repaint();
                 }
             };
-            let msg = match pipeline::enable_collection(&db_path, &progress)
-                .and_then(|()| pipeline::analyze(&db_path, &progress))
+            let msg = match backend::enable_collection(&db_path, &progress)
+                .and_then(|()| backend::analyze(&db_path, &progress))
             {
                 Ok(r) => WorkerMsg::Ready(Box::new(r)),
                 Err(e) => WorkerMsg::Failed(format!("{e:#}")),
@@ -914,6 +935,18 @@ impl App {
     }
 
     fn start_apply(&mut self, egui_ctx: &egui::Context) {
+        // Applying goes through PowerShell's Set-NetFirewallRule, which has
+        // no Linux counterpart. Changing a ufw or firewalld rule means
+        // deleting and recreating it — a different operation with a
+        // different blast radius, and one that has not been built. Refuse
+        // loudly rather than run a no-op that looks like it worked.
+        if cfg!(target_os = "linux") {
+            self.status = "Applying rule changes isn't supported on Linux yet — Firebreak is \
+                           read-only here. Change rules with ufw/firewall-cmd/nft directly."
+                .into();
+            self.confirm_open = false;
+            return;
+        }
         let plan = self.planned_changes();
         if plan.is_empty() {
             return;
@@ -1252,13 +1285,38 @@ pub fn run_preview(
 }
 
 // small helpers shared with the paint module
-pub(crate) fn profile_chip(tag: &str) -> (&'static str, Color32, Color32, Color32) {
+
+/// Colours and short label for a scope chip.
+///
+/// The three Windows profiles have fixed abbreviations and colours. Anything
+/// else is a backend-supplied scope — a firewalld zone — and gets the neutral
+/// chip with its *own* name. It must not fall back to the "ANY" chip: ANY
+/// means "every scope", so labelling a single zone that way tells the reader
+/// the opposite of the truth.
+pub(crate) fn profile_chip(tag: &str) -> (String, Color32, Color32, Color32) {
+    let owned = |(l, a, b, c): (&'static str, Color32, Color32, Color32)| (l.to_string(), a, b, c);
     match tag {
-        "Domain" => t::CHIP_DOM(),
-        "Private" => t::CHIP_PRV(),
-        "Public" => t::CHIP_PUB(),
-        _ => t::CHIP_ANY(),
+        "Domain" => owned(t::CHIP_DOM()),
+        "Private" => owned(t::CHIP_PRV()),
+        "Public" => owned(t::CHIP_PUB()),
+        "Any" => owned(t::CHIP_ANY()),
+        zone => {
+            let (_, fg, bg, border) = t::CHIP_ANY();
+            (abbreviate_scope(zone), fg, bg, border)
+        }
     }
+}
+
+/// Zone names are user-chosen and can be long; the chip is small. Keep it
+/// recognisable rather than complete — the full name is in the rule's own
+/// display name and in the scope filter row.
+fn abbreviate_scope(zone: &str) -> String {
+    const MAX: usize = 10;
+    let upper: String = zone.to_uppercase();
+    if upper.chars().count() <= MAX {
+        return upper;
+    }
+    upper.chars().take(MAX - 1).collect::<String>() + "\u{2026}"
 }
 
 pub(crate) use helpers::*;
@@ -1303,13 +1361,7 @@ mod helpers {
         editable: bool,
         id_src: (usize, u8),
     ) -> (f32, Option<egui::Response>) {
-        let (label, fg, bg, border) = profile_chip(match tag {
-            "Domain" => "Domain",
-            "Private" => "Private",
-            "Public" => "Public",
-            _ => "Any",
-        });
-        let short = &label; // DOM/PRV/PUB from profile_chip
+        let (short, fg, bg, border) = profile_chip(tag);
         let font = t::semibold(9.5);
         let (fg, bg, border) = if kept {
             (fg, bg, border)

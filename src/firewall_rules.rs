@@ -135,6 +135,7 @@ pub fn save_rules_cache(rules: &[RuleInfo]) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub fn load_rules_cache() -> Option<Vec<RuleInfo>> {
     let json = std::fs::read_to_string(rules_cache_path()).ok()?;
     serde_json::from_str(&json).ok()

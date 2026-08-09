@@ -226,11 +226,19 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
         println!("Cleared collected rule usage. Counting restarts from the next run.");
         return Ok(());
     }
-    let prior = store.load_counter_state()?;
-    let (report, next) = linux::analyze(backend, &prior)?;
-    store.save_counter_state(&next)?;
-    print_linux_report(backend, &report);
-    Ok(())
+    if args.no_ui {
+        let prior = store.load_counter_state()?;
+        let (report, next) = linux::analyze(backend, &prior)?;
+        store.save_counter_state(&next)?;
+        print_linux_report(backend, &report);
+        return Ok(());
+    }
+
+    // Default, as on Windows: boot straight to the window. The rule table,
+    // filters, drawer and CSV export are the same ones — only the evidence
+    // behind them differs.
+    drop(store);
+    ui::run_live(args.db_path.clone())
 }
 
 fn run_windows(args: Args) -> Result<()> {

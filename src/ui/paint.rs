@@ -407,7 +407,7 @@ fn header(app: &mut App, ctx: &egui::Context) {
                         .as_deref()
                         .map(time_util::since_with_age)
                         .unwrap_or_else(|| "just now".into());
-                    stat(ui, "Auditing active", &format!("Since {since}"));
+                    stat(ui, collecting_label(), &format!("Since {since}"));
                     ui.add_space(12.0);
                     // Stop control — disables auditing (and returns to the
                     // first-run view, handy for testing that state too)
@@ -418,8 +418,12 @@ fn header(app: &mut App, ctx: &egui::Context) {
                 } else {
                     stat(
                         ui,
-                        "Auditing is off",
-                        "No connection data has ever been collected",
+                        if cfg!(target_os = "linux") {
+                            "Not counting yet"
+                        } else {
+                            "Auditing is off"
+                        },
+                        "No usage data has ever been collected",
                     );
                 }
 
@@ -429,14 +433,15 @@ fn header(app: &mut App, ctx: &egui::Context) {
                         .ctx_info
                         .last_ingest
                         .as_deref()
-                        .map(|s| format!("This run · Last Ingest {}", time_util::relative(s)))
-                        .unwrap_or_else(|| "This run".into());
+                        .map(|s| format!("{} · Read {}", measured_scope(), time_util::relative(s)))
+                        .unwrap_or_else(|| measured_scope().to_string());
                     let events = if app.phase == Phase::Loading || app.phase == Phase::Enabling {
-                        format!("Ingesting… {}", app.progress)
+                        format!("Reading… {}", app.progress)
                     } else {
                         format!(
-                            "{} events",
-                            t::fmt_thousands(app.ctx_info.events_processed as i64)
+                            "{} {}",
+                            t::fmt_thousands(app.ctx_info.events_processed as i64),
+                            measured_noun()
                         )
                     };
                     stat(ui, &events, &last);
@@ -445,7 +450,14 @@ fn header(app: &mut App, ctx: &egui::Context) {
                     let gap = !app.ctx_info.note.is_empty();
                     let young = app.young_evidence_hours().is_some();
                     let value = if gap {
-                        "Coverage gap"
+                        // On Windows a note means the event log has a hole in
+                        // it. On Linux it is a caveat about how counting
+                        // works, not a hole in the evidence.
+                        if cfg!(target_os = "linux") {
+                            "Read the caveat"
+                        } else {
+                            "Coverage gap"
+                        }
                     } else {
                         "Coverage complete"
                     };
@@ -1097,18 +1109,41 @@ fn fmt(font: egui::FontId, color: Color32) -> egui::text::TextFormat {
 
 fn firstrun_band(app: &mut App, ctx: &egui::Context) {
     egui::TopBottomPanel::top("firstrun")
-        .frame(egui::Frame::none().fill(t::ACCENT_TINT()).inner_margin(egui::Margin::symmetric(PAGE, 12.0)))
+        .frame(
+            egui::Frame::none()
+                .fill(t::ACCENT_TINT())
+                .inner_margin(egui::Margin::symmetric(PAGE, 12.0)),
+        )
         .show(ctx, |ui| {
-            super::stroke_bottom(ui.painter(), ui.max_rect().expand2(Vec2::new(PAGE, 12.0)), t::ACCENT_TINT_BORDER());
+            super::stroke_bottom(
+                ui.painter(),
+                ui.max_rect().expand2(Vec2::new(PAGE, 12.0)),
+                t::ACCENT_TINT_BORDER(),
+            );
             ui.horizontal(|ui| {
                 let enabling = app.phase == Phase::Enabling;
-                let label = if enabling { "Enabling…" } else { "Enable connection auditing" };
-                let galley = ui.painter().layout_no_wrap(label.to_string(), t::semibold(13.0), Color32::WHITE);
+                let label = if enabling {
+                    "Enabling…"
+                } else {
+                    enable_button_label()
+                };
+                let galley = ui.painter().layout_no_wrap(
+                    label.to_string(),
+                    t::semibold(13.0),
+                    Color32::WHITE,
+                );
                 let size = Vec2::new(galley.size().x + 40.0, galley.size().y + 16.0);
                 let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-                let fill = if enabling { t::ACCENT().gamma_multiply(0.6) } else if resp.hovered() { t::ACCENT().gamma_multiply(1.1) } else { t::ACCENT() };
+                let fill = if enabling {
+                    t::ACCENT().gamma_multiply(0.6)
+                } else if resp.hovered() {
+                    t::ACCENT().gamma_multiply(1.1)
+                } else {
+                    t::ACCENT()
+                };
                 ui.painter().rect_filled(rect, 0.0, fill);
-                ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+                ui.painter()
+                    .galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
                 if resp.clicked() && !enabling {
                     app.start_enable(ctx);
                 }
@@ -1116,21 +1151,83 @@ fn firstrun_band(app: &mut App, ctx: &egui::Context) {
                 // constrain the explainer to the space left of the buttons so
                 // it wraps instead of running off the window
                 let w = (ui.available_width() - 8.0).max(120.0);
-                ui.allocate_ui_with_layout(Vec2::new(w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    let mut job = egui::text::LayoutJob::default();
-                    job.wrap.max_width = w;
-                    job.append(
-                        "Turns on Windows Filtering Platform audit events (security log, ~40 MB/day at typical load). ",
-                        0.0, fmt(t::sans(12.0), t::INK()));
-                    job.append("Nothing is blocked or modified", 0.0, fmt(t::semibold(12.0), t::INK()));
-                    job.append(
-                        " — firebreak only records which rules the traffic matches. Usage columns fill in as evidence \
-                         accumulates; plan on ~7–14 days before zero-hit values mean anything.",
-                        0.0, fmt(t::sans(12.0), t::INK()));
-                    ui.label(job);
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        let mut job = egui::text::LayoutJob::default();
+                        job.wrap.max_width = w;
+                        let (before, after) = enable_explainer();
+                        job.append(before, 0.0, fmt(t::sans(12.0), t::INK()));
+                        job.append(
+                            "Nothing is blocked or modified",
+                            0.0,
+                            fmt(t::semibold(12.0), t::INK()),
+                        );
+                        job.append(after, 0.0, fmt(t::sans(12.0), t::INK()));
+                        ui.label(job);
+                    },
+                );
             });
         });
+}
+
+/// Header wording for an active collection.
+fn collecting_label() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "Counting active"
+    } else {
+        "Auditing active"
+    }
+}
+
+/// Windows counts events ingested *this run*; Linux counters are cumulative
+/// totals, so calling them "this run" would understate months of evidence.
+fn measured_scope() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "Total so far"
+    } else {
+        "This run"
+    }
+}
+
+fn measured_noun() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "packets"
+    } else {
+        "events"
+    }
+}
+
+/// What "start collecting" is called, per platform. Windows turns on an
+/// audit policy; Linux installs counters.
+fn enable_button_label() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "Start counting rule usage"
+    } else {
+        "Enable connection auditing"
+    }
+}
+
+/// The two halves of the enable explainer, either side of the bolded
+/// reassurance. Both platforms make the same promise — Firebreak observes,
+/// it does not enforce — but by different means, and the Windows wording
+/// (WFP, security log, MB/day) is simply untrue on Linux.
+fn enable_explainer() -> (&'static str, &'static str) {
+    if cfg!(target_os = "linux") {
+        (
+            "Adds packet counters so the kernel records which rules traffic matches. ",
+            " — no rule's verdict changes, and no packet is dropped that would not have been. \
+             Counts fill in as traffic arrives, and reset on reboot or a firewall reload \
+             (earlier totals are kept).",
+        )
+    } else {
+        (
+            "Turns on Windows Filtering Platform audit events (security log, ~40 MB/day at typical load). ",
+            " — firebreak only records which rules the traffic matches. Usage columns fill in as evidence \
+             accumulates; plan on ~7–14 days before zero-hit values mean anything.",
+        )
+    }
 }
 
 // ---- filter bar ----
@@ -1961,8 +2058,14 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         }
 
         // last seen
+        // "never" is only true when we *watched* and saw nothing. A packet
+        // counter has no timestamps at all, so a rule with 143 hits and no
+        // last-seen must not be labelled never — it flatly contradicts its
+        // own hit count.
         let (last_txt, last_col) = match r.usage.as_ref().and_then(|u| u.last_seen.as_deref()) {
             Some(ls) => (time_util::relative(ls), t::SECONDARY()),
+            None if r.total_hits() > 0 => ("not recorded".to_string(), t::DISABLED()),
+            None if !r.hits_known => ("—".to_string(), t::DISABLED()),
             None => ("never".to_string(), t::DISABLED()),
         };
         cell_text(

@@ -416,6 +416,7 @@ pub fn run() -> Result<()> {
                 target_enabled,
                 target_scopes,
                 reviewed,
+                hits_known: true,
             }
         })
         .collect();
