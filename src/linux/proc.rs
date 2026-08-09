@@ -290,11 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn this_host_has_at_least_one_listening_socket() {
-        // smoke test against the real /proc — sshd, a resolver, something is
-        // always bound on a running Linux box
-        let ls = enumerate_listeners();
-        assert!(!ls.is_empty(), "expected some listening socket");
-        assert!(ls.iter().all(|l| l.local_port > 0));
+    fn reading_the_real_proc_yields_well_formed_listeners() {
+        // Smoke test against the live /proc. Deliberately does not require a
+        // non-empty result: a minimal container or CI runner may genuinely
+        // have nothing bound, and a test that depends on the host's services
+        // is flaky rather than strict. The golden fixtures above are what
+        // actually pin the parsing.
+        for l in enumerate_listeners() {
+            assert!(l.local_port > 0, "port 0 is not a real listener");
+            assert!(matches!(l.proto.as_str(), "TCP" | "UDP"), "{}", l.proto);
+            assert!(!l.local_address.is_empty());
+        }
     }
 }
