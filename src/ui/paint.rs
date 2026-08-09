@@ -1172,6 +1172,26 @@ fn firstrun_band(app: &mut App, ctx: &egui::Context) {
         });
 }
 
+/// Where Apply writes its restorable backup, per platform. Telling a Linux
+/// user to look in %ProgramData% is worse than saying nothing.
+fn backup_location() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "/var/lib/firebreak/backups/"
+    } else {
+        "%ProgramData%\\firebreak\\backups\\"
+    }
+}
+
+/// Windows also records rule changes in the security audit log; Linux has no
+/// equivalent Firebreak writes to, so it must not claim one.
+fn change_record_note() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "The backup above is the record of this change."
+    } else {
+        "Changes are also written to the audit log."
+    }
+}
+
 /// What the confirm dialog calls the thing it is about to change.
 fn firewall_product_name() -> String {
     #[cfg(target_os = "linux")]
@@ -3556,7 +3576,7 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
                                 fmt(t::sans(11.5), t::BACKUP_TEXT()),
                             );
                             job.append(
-                                "%ProgramData%\\firebreak\\backups\\",
+                                backup_location(),
                                 0.0,
                                 fmt(t::mono(10.5), t::BACKUP_TEXT()),
                             );
@@ -3577,7 +3597,7 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
             pad20(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Changes are also written to the audit log.")
+                        egui::RichText::new(change_record_note())
                             .font(t::sans(11.0))
                             .color(t::FAINT()),
                     );
