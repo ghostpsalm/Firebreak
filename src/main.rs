@@ -103,6 +103,10 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20           so --enable-only installs Firebreak's own shadow counter\n\
                      \x20           table and --restore-audit removes it again. A plain run\n\
                      \x20           never instruments the host.\n\
+                     \x20 nftables  reads each rule's own counter, where the ruleset has one.\n\
+                     \x20           --enable-only adds counters to the rules that don't (the\n\
+                     \x20           ruleset is backed up first and every edit verified);\n\
+                     \x20           --restore-audit puts the ruleset back.\n\
                      \x20 --reset   clear collected totals and start counting over.\n\
                      \x20 --db      database path (default /var/lib/firebreak/firebreak.db)\n\
                      \x20 The remaining options below are Windows-only.\n\n\
@@ -208,11 +212,11 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
     model::set_vocabulary(backend.scope_vocabulary());
 
     if args.enable_only {
-        println!("{}", linux::enable_collection(backend)?);
+        println!("{}", linux::enable_collection(backend, &args.db_path)?);
         return Ok(());
     }
     if args.restore_audit {
-        println!("{}", linux::stop_collection(backend)?);
+        println!("{}", linux::stop_collection(backend, &args.db_path)?);
         return Ok(());
     }
 

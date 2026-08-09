@@ -38,8 +38,13 @@ Security log, not `pfirewall.log` or a packet-capture driver) and
 |---|---|---|---|
 | ufw | `### tuple ###` in `user.rules` | iptables counters, always on | no |
 | firewalld | zone + service/port | Firebreak's own shadow nft table | **yes** |
+| nftables | family/table/chain + expression digest | the rule's *own* counter | partly |
 
-Three things to know before touching them:
+Detection order is ufw → firewalld → raw nftables, and the order matters:
+the first two *are* nftables underneath, so checking raw nftables first
+would audit their generated rules instead of the vocabulary the user wrote.
+
+Four things to know before touching them:
 
 - **A kernel counter is a gauge, not an event stream.** It resets on reboot,
   reload and `iptables -Z`. `linux/counters.rs` banks the old lifetime
@@ -47,9 +52,17 @@ Three things to know before touching them:
 - **firewalld's nft table is `flags owner`** — the kernel refuses to let any
   process add a counter to it, sudo included. Hence the shadow table, at
   input priority 300 so a hit means "firewalld allowed this".
-- **Unmeasurable is not unused.** Rich rules, ipsets, protocol-only entries
-  and unparseable tuples are reported in their own section. Folding them
-  into the zero-hit list would invite deleting a load-bearing rule.
+- **Unmeasurable is not unused.** Rich rules, ipsets, protocol-only entries,
+  unparseable tuples and counter-less nft rules are reported in their own
+  section. Folding them into the zero-hit list would invite deleting a
+  load-bearing rule.
+- **Raw nftables is the only backend that edits the user's rules.** Adding a
+  counter takes the kernel's own JSON expression and inserts
+  `{"counter": null}` before the verdict — never re-derived from text — after
+  a full ruleset backup, and every touched rule is re-read and verified to be
+  its original self plus exactly one counter, or the whole thing is rolled
+  back. Keep all three of those. Identity is an expression digest, not the
+  handle, which is renumbered on every reload.
 
 Rule scope is a backend-supplied vocabulary (`model::ScopeVocabulary`), not
 Windows' Domain/Private/Public: firewalld zones are arbitrary and ufw has no

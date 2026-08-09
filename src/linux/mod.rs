@@ -19,6 +19,7 @@
 
 pub mod counters;
 pub mod firewalld;
+pub mod nftables;
 pub mod proc;
 pub mod ufw;
 
@@ -29,6 +30,7 @@ use anyhow::{Context, Result};
 pub enum Backend {
     Ufw,
     Firewalld,
+    Nftables,
 }
 
 impl Backend {
@@ -36,6 +38,7 @@ impl Backend {
         match self {
             Backend::Ufw => "ufw",
             Backend::Firewalld => "firewalld",
+            Backend::Nftables => "nftables",
         }
     }
 
@@ -46,6 +49,7 @@ impl Backend {
             Backend::Firewalld => {
                 "Firebreak's own shadow counter table (firewalld's is owner-locked)"
             }
+            Backend::Nftables => "each rule's own nftables counter — exact, nothing reconstructed",
         }
     }
 
@@ -59,6 +63,10 @@ impl Backend {
             // so Firebreak must install a shadow table before anything is
             // measured — and then wait for traffic.
             Backend::Firewalld => true,
+            // A raw ruleset may already carry counters, in which case the
+            // first run answers. Rules without one need a counter adding,
+            // which edits the live firewall and is therefore opt-in.
+            Backend::Nftables => true,
         }
     }
 
@@ -73,6 +81,8 @@ impl Backend {
                 names: firewalld::read_zones().map(|z| z.names).unwrap_or_default(),
                 any_token: "Any".into(),
             },
+            // raw nftables has no zone or profile concept
+            Backend::Nftables => crate::model::ScopeVocabulary::none(),
         }
     }
 }
@@ -97,6 +107,13 @@ pub fn detect() -> Result<Option<Backend>> {
     }
     if crate::syspath::system_tool("firewall-cmd").is_some() && firewalld::is_running() {
         return Ok(Some(Backend::Firewalld));
+    }
+    // Last: a hand-written ruleset with no manager in front of it. Checked
+    // only after the others, since both of them *are* nftables underneath —
+    // auditing their generated rules directly would report a vocabulary the
+    // user never wrote.
+    if crate::syspath::system_tool("nft").is_some() && nftables::has_ruleset() {
+        return Ok(Some(Backend::Nftables));
     }
     Ok(None)
 }
@@ -153,14 +170,16 @@ pub fn analyze(backend: Backend, prior: &PriorState) -> Result<(Report, PriorSta
     match backend {
         Backend::Ufw => analyze_ufw(prior),
         Backend::Firewalld => analyze_firewalld(prior),
+        Backend::Nftables => analyze_nftables(prior),
     }
 }
 
 /// Start collecting on a backend that needs instrumentation. No-op where the
 /// kernel already counts.
-pub fn enable_collection(backend: Backend) -> Result<String> {
+pub fn enable_collection(backend: Backend, db_path: &std::path::Path) -> Result<String> {
     match backend {
         Backend::Ufw => Ok("ufw counters are always running — nothing to enable.".into()),
+        Backend::Nftables => nftables::add_counters(db_path),
         Backend::Firewalld => {
             let zones = firewalld::read_zones()?;
             firewalld::install(&zones.rules)?;
@@ -176,9 +195,10 @@ pub fn enable_collection(backend: Backend) -> Result<String> {
 
 /// Undo whatever `enable_collection` installed. Collected totals in the
 /// store are kept — this stops counting, it does not discard evidence.
-pub fn stop_collection(backend: Backend) -> Result<String> {
+pub fn stop_collection(backend: Backend, db_path: &std::path::Path) -> Result<String> {
     match backend {
         Backend::Ufw => Ok("ufw needed no instrumentation, so there is nothing to remove.".into()),
+        Backend::Nftables => nftables::remove_counters(db_path),
         Backend::Firewalld => {
             firewalld::teardown()?;
             Ok(format!(
@@ -356,6 +376,74 @@ fn analyze_ufw(prior: &PriorState) -> Result<(Report, PriorState)> {
             rule: info,
             hits,
         });
+    }
+    Ok((report, next))
+}
+
+/// Raw nftables: read whatever counters the ruleset already carries.
+///
+/// This is the only backend whose evidence is exact rather than inferred —
+/// the counter belongs to the rule itself. Rules without one are reported as
+/// unmeasurable with an actionable reason, never as zero-hit, because
+/// "nobody ever counted this" and "this is never used" are opposite
+/// conclusions and only one of them justifies deleting a rule.
+fn analyze_nftables(prior: &PriorState) -> Result<(Report, PriorState)> {
+    use std::collections::BTreeMap;
+
+    let rules = nftables::read_rules()?;
+    let live_listeners = proc::enumerate_listeners();
+    let mut report = Report::default();
+
+    let ids: Vec<String> = rules.iter().map(nftables::NftRule::id).collect();
+    let generation = counters::generation(&ids);
+    let generation_changed = prior.generation.as_deref().is_some_and(|g| g != generation);
+    let mut next = PriorState {
+        generation: Some(generation),
+        counters: BTreeMap::new(),
+    };
+
+    let uncounted = rules.iter().filter(|r| r.counter.is_none()).count();
+    for rule in &rules {
+        let id = rule.id();
+        let hits = match rule.counter {
+            Some(raw) => {
+                let state = prior
+                    .counters
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default()
+                    .observe(raw, generation_changed);
+                next.counters.insert(id.clone(), state);
+                Some(state.total())
+            }
+            None => {
+                // Name the rule as the admin wrote it. Its identity is a
+                // digest, which tells a reader nothing about which rule of
+                // theirs is going uncounted.
+                report.unmeasurable.push((
+                    format!("{} {} — {}", rule.table, rule.chain, rule.text),
+                    "This rule carries no counter, so the kernel is not counting it. Run \
+                     `firebreak --enable-only` to add one (the ruleset is backed up first \
+                     and every edit is verified)."
+                        .into(),
+                ));
+                None
+            }
+        };
+        let info = rule.to_rule_info();
+        report.rows.push(RuleUsageRow {
+            listening: crate::listeners::listeners_for_rule(&info, &live_listeners),
+            rule: info,
+            hits,
+        });
+    }
+
+    if uncounted > 0 {
+        report.note = Some(format!(
+            "{uncounted} of {} rule(s) carry no counter and are listed as not measurable. \
+             Counters also reset on reboot or a ruleset reload; Firebreak banks the old total.",
+            rules.len()
+        ));
     }
     Ok((report, next))
 }
