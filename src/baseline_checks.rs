@@ -92,6 +92,19 @@ const CHECKS: &[Check] = &[
 
 pub fn flags_for(rule: &RuleInfo) -> Vec<BaselineFlag> {
     let mut out = Vec::new();
+
+    // A rule applied by Group Policy or another management system is not
+    // this machine's to change: switching it off here lasts until the next
+    // policy refresh puts it back. Saying so stops someone "fixing" the same
+    // rule every week and wondering why it returns.
+    if rule.is_managed() {
+        out.push(BaselineFlag {
+            title: "Managed centrally",
+            advice: "This rule comes from Group Policy or device management, not from this \
+                     machine. Disabling it here is undone at the next policy refresh — change \
+                     it where it is defined.",
+        });
+    }
     let name = rule.display_name.to_lowercase();
     let group = rule.group.as_deref().unwrap_or("").to_lowercase();
     let inbound = rule.direction.eq_ignore_ascii_case("inbound");
@@ -186,6 +199,8 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 
@@ -243,6 +258,8 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 

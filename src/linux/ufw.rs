@@ -470,6 +470,8 @@ impl UfwRule {
             remote_port: self.sport.clone(),
             service: None,
             remote_address: Some(self.src.clone()),
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 }

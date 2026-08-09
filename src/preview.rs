@@ -46,6 +46,10 @@ fn rule(
         remote_port: None,
         service: service.map(Into::into),
         remote_address: Some("any".into()),
+        // one mock rule carries a Group Policy origin so the managed-rule
+        // treatment is visible in --ui-preview
+        policy_source: (id == "a2").then(|| "Corp-Baseline-Firewall".to_string()),
+        policy_source_type: Some(if id == "a2" { "GroupPolicy" } else { "Local" }.to_string()),
     }
 }
 

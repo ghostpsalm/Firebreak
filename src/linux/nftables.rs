@@ -93,6 +93,9 @@ impl NftRule {
             remote_port: None,
             service: None,
             remote_address: None,
+            // Linux has no policy-store concept: every rule is local.
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 }

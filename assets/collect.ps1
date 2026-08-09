@@ -35,7 +35,7 @@ $ports = @{}; Get-NetFirewallPortFilter -All | ForEach-Object {
 }
 $svcs = @{};  Get-NetFirewallServiceFilter -All | ForEach-Object { $svcs[$_.InstanceID] = [string]$_.Service }
 $addrs = @{}; Get-NetFirewallAddressFilter -All | ForEach-Object { $addrs[$_.InstanceID] = (@($_.RemoteAddress) -join ',') }
-$rules = Get-NetFirewallRule | ForEach-Object {
+$rules = Get-NetFirewallRule -PolicyStore ActiveStore -TracePolicyStore | ForEach-Object {
     $p = $ports[$_.InstanceID]
     [pscustomobject]@{
         Name          = $_.Name
@@ -52,6 +52,8 @@ $rules = Get-NetFirewallRule | ForEach-Object {
         RemotePort    = $p.RemotePort
         Service       = $svcs[$_.InstanceID]
         RemoteAddress = $addrs[$_.InstanceID]
+        PolicyStoreSource     = [string]$_.PolicyStoreSource
+        PolicyStoreSourceType = [string]$_.PolicyStoreSourceType
     }
 }
 ConvertTo-Json -InputObject @($rules) -Compress -Depth 3 | Set-Content -Encoding UTF8 (Join-Path $work "rules.json")

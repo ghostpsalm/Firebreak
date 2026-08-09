@@ -211,6 +211,8 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 

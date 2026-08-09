@@ -33,6 +33,37 @@ pub struct RuleInfo {
     pub service: Option<String>,
     #[serde(rename = "RemoteAddress", default)]
     pub remote_address: Option<String>,
+    /// Where the rule came from — a GPO name, or empty for a local rule.
+    /// Windows only; populated by -TracePolicyStore.
+    #[serde(rename = "PolicyStoreSource", default)]
+    pub policy_source: Option<String>,
+    /// Local / GroupPolicy / Dynamic / Generated / Hardcoded. A rule that is
+    /// not Local was applied by policy, so disabling it here is temporary —
+    /// the next policy refresh puts it back.
+    #[serde(rename = "PolicyStoreSourceType", default)]
+    pub policy_source_type: Option<String>,
+}
+
+/// Whether a rule is managed from outside this machine.
+impl RuleInfo {
+    /// True when the rule came from Group Policy or another management
+    /// system rather than being made locally. Disabling such a rule is
+    /// undone by the next policy refresh, so the UI must say so rather than
+    /// let someone "fix" the same rule every week.
+    pub fn is_managed(&self) -> bool {
+        self.policy_source_type
+            .as_deref()
+            .is_some_and(|t| !t.is_empty() && !t.eq_ignore_ascii_case("Local"))
+    }
+
+    /// Short label for where the rule came from.
+    pub fn source_label(&self) -> &str {
+        match self.policy_source_type.as_deref() {
+            Some(t) if t.eq_ignore_ascii_case("GroupPolicy") => "Group Policy",
+            Some(t) if !t.is_empty() && !t.eq_ignore_ascii_case("Local") => t,
+            _ => "Local",
+        }
+    }
 }
 
 impl RuleInfo {
@@ -348,11 +379,36 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 
     fn sel(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_group_policy_rule_is_recognised_as_managed() {
+        // Disabling a centrally-managed rule lasts until the next policy
+        // refresh. Treating it as local is how someone ends up "fixing" the
+        // same rule every week.
+        let mut r = rule_with_profile("Any");
+        r.policy_source_type = Some("GroupPolicy".into());
+        r.policy_source = Some("Corp-Baseline".into());
+        assert!(r.is_managed());
+        assert_eq!(r.source_label(), "Group Policy");
+    }
+
+    #[test]
+    fn a_local_rule_is_not_managed() {
+        let mut r = rule_with_profile("Any");
+        assert!(!r.is_managed(), "no policy info means local");
+        assert_eq!(r.source_label(), "Local");
+        r.policy_source_type = Some("Local".into());
+        assert!(!r.is_managed());
+        r.policy_source_type = Some(String::new());
+        assert!(!r.is_managed(), "an empty type is not a management system");
     }
 
     #[test]

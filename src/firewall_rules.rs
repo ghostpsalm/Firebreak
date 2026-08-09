@@ -41,6 +41,19 @@ pub(crate) fn run_powershell(script: &str) -> Result<String> {
 /// Enumerate all firewall rules with their program/port filters joined in.
 /// One PowerShell round-trip; the -All filter queries avoid a per-rule
 /// association lookup, which is unusably slow across ~500 rules.
+///
+/// **ActiveStore, not the default.** `Get-NetFirewallRule` with no
+/// `-PolicyStore` returns PersistentStore — local rules only. On a
+/// domain-joined or Intune-managed machine that silently omits every rule
+/// applied by Group Policy and by Windows Service Hardening, so the audit
+/// would report an incomplete firewall and push traffic that matched a
+/// managed rule into the unattributed bucket. ActiveStore is the resultant
+/// set: local + GPO/RSOP + service stores.
+///
+/// `-TracePolicyStore` fills in PolicyStoreSource / PolicyStoreSourceType,
+/// which is how a managed rule is told apart from one an admin made here.
+/// Rules deployed by Intune live in their own MDM store and may still be
+/// absent — see the verification note in docs/internals.md.
 pub fn enumerate_rules() -> Result<Vec<RuleInfo>> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
@@ -58,7 +71,7 @@ $svcs = @{}
 Get-NetFirewallServiceFilter -All | ForEach-Object { $svcs[$_.InstanceID] = [string]$_.Service }
 $addrs = @{}
 Get-NetFirewallAddressFilter -All | ForEach-Object { $addrs[$_.InstanceID] = (@($_.RemoteAddress) -join ',') }
-$out = Get-NetFirewallRule | ForEach-Object {
+$out = Get-NetFirewallRule -PolicyStore ActiveStore -TracePolicyStore | ForEach-Object {
     $p = $ports[$_.InstanceID]
     [pscustomobject]@{
         Name          = $_.Name
@@ -75,6 +88,8 @@ $out = Get-NetFirewallRule | ForEach-Object {
         RemotePort    = $p.RemotePort
         Service       = $svcs[$_.InstanceID]
         RemoteAddress = $addrs[$_.InstanceID]
+        PolicyStoreSource     = [string]$_.PolicyStoreSource
+        PolicyStoreSourceType = [string]$_.PolicyStoreSourceType
     }
 }
 ConvertTo-Json -InputObject @($out) -Compress -Depth 3

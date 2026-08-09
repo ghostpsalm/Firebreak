@@ -87,6 +87,9 @@ impl FwdRule {
             remote_port: None,
             service: (self.kind == "service").then(|| self.label.clone()),
             remote_address: None,
+            // Linux has no policy-store concept: every rule is local.
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 }

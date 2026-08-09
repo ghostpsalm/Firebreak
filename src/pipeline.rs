@@ -129,7 +129,7 @@ pub fn default_csv_name() -> String {
 /// Export every rule row (as currently analyzed) to CSV at `path`.
 pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
     let mut out = String::new();
-    out.push_str("Rule,DisplayName,Direction,Action,Profiles,Scope,Enabled,Allow,Block,Domain(A/B),Private(A/B),Public(A/B),LastSeen,DistinctPeers,AppsObserved,ListeningNow\n");
+    out.push_str("Rule,DisplayName,Direction,Action,Profiles,Scope,Source,Enabled,Allow,Block,Domain(A/B),Private(A/B),Public(A/B),LastSeen,DistinctPeers,AppsObserved,ListeningNow\n");
     let cell = |s: &str| -> String {
         if s.contains([',', '"', '\n']) {
             format!("\"{}\"", s.replace('"', "\"\""))
@@ -163,6 +163,12 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
             cell(&r.rule.action),
             cell(&r.rule.profile),
             cell(&listeners::scope_summary(&r.rule)),
+            // where the rule came from: a centrally-managed rule cannot be
+            // changed here for long, which matters when acting on the export
+            cell(&match r.rule.policy_source.as_deref() {
+                Some(src) if !src.is_empty() => format!("{} ({src})", r.rule.source_label()),
+                _ => r.rule.source_label().to_string(),
+            }),
             cell(if r.rule.is_enabled() { "True" } else { "False" }),
             allow.to_string(),
             block.to_string(),
