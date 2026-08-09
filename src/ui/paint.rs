@@ -1172,6 +1172,31 @@ fn firstrun_band(app: &mut App, ctx: &egui::Context) {
         });
 }
 
+/// What the confirm dialog calls the thing it is about to change.
+fn firewall_product_name() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        match crate::linux::detect() {
+            Ok(Some(b)) => b.label().to_string(),
+            _ => "this firewall".to_string(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    "Windows Firewall".to_string()
+}
+
+/// The warning shown when switching a rule off actually removes it.
+fn destructive_warning() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::linux::apply::Reversibility;
+        let backend = crate::linux::detect().ok().flatten()?;
+        (backend.disable_semantics() == Reversibility::Destructive).then(|| backend.apply_warning())
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
 /// Header wording for an active collection.
 fn collecting_label() -> &'static str {
     if cfg!(target_os = "linux") {
@@ -3459,8 +3484,9 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
             pad20(ui, |ui| {
                 ui.label(
                     egui::RichText::new(format!(
-                        "Apply {total} change{} to Windows Firewall?",
-                        if total == 1 { "" } else { "s" }
+                        "Apply {total} change{} to {}?",
+                        if total == 1 { "" } else { "s" },
+                        firewall_product_name()
                     ))
                     .font(t::semibold(15.0))
                     .color(t::INK()),
@@ -3474,6 +3500,17 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
                     .font(t::sans(12.0))
                     .color(t::SECONDARY()),
                 );
+                // On a backend with no per-rule off switch, "disable" is a
+                // deletion. Saying so here — before the confirm — is the
+                // difference between an informed choice and a lost rule.
+                if let Some(warning) = destructive_warning() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(warning)
+                            .font(t::semibold(12.0))
+                            .color(t::ACCENT()),
+                    );
+                }
             });
             ui.add_space(12.0);
             section_sep(ui);

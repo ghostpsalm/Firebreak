@@ -17,6 +17,7 @@
 //! there is no collection clock to start and no waiting period before the
 //! first useful answer.
 
+pub mod apply;
 pub mod bridge;
 pub mod counters;
 pub mod firewalld;

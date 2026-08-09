@@ -14,6 +14,8 @@ use crate::model::{BaselineFlag, RuleInfo, RuleUsage};
 use crate::pipeline;
 use crate::pipeline::{AnalysisResult, UnmatchedRow};
 
+#[cfg(not(target_os = "linux"))]
+use crate::firewall_rules;
 /// Where the UI worker gets its data. Windows ingests audit events through
 /// `pipeline`; Linux reads rule counters through `linux::bridge`. Both expose
 /// the same four entry points, so the worker below is written once.
@@ -22,7 +24,7 @@ use crate::linux::bridge as backend;
 #[cfg(not(target_os = "linux"))]
 use crate::pipeline as backend;
 use crate::theme::{self as t};
-use crate::{firewall_rules, time_util};
+use crate::time_util;
 
 const ROW_H: f32 = 31.0;
 const HEADER_H: f32 = 28.0;
@@ -935,24 +937,13 @@ impl App {
     }
 
     fn start_apply(&mut self, egui_ctx: &egui::Context) {
-        // Applying goes through PowerShell's Set-NetFirewallRule, which has
-        // no Linux counterpart. Changing a ufw or firewalld rule means
-        // deleting and recreating it — a different operation with a
-        // different blast radius, and one that has not been built. Refuse
-        // loudly rather than run a no-op that looks like it worked.
-        if cfg!(target_os = "linux") {
-            self.status = "Applying rule changes isn't supported on Linux yet — Firebreak is \
-                           read-only here. Change rules with ufw/firewall-cmd/nft directly."
-                .into();
-            self.confirm_open = false;
-            return;
-        }
         let plan = self.planned_changes();
         if plan.is_empty() {
             return;
         }
         let total = plan.len();
         let all_rules: Vec<RuleInfo> = self.rows.iter().map(|r| r.rule.clone()).collect();
+        let db_path = self.db_path.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.apply = Some(ApplyState {
             rx,
@@ -967,7 +958,7 @@ impl App {
         });
         let egui_ctx = egui_ctx.clone();
         std::thread::spawn(move || {
-            match firewall_rules::backup_policy(&all_rules) {
+            match platform_backup(&all_rules, db_path.as_deref()) {
                 Ok(path) => {
                     let _ = tx.send(ApplyMsg::BackupOk(path.display().to_string()));
                 }
@@ -983,13 +974,7 @@ impl App {
                     name: change.name.clone(),
                 });
                 egui_ctx.request_repaint();
-                let result = match &change.kind {
-                    ChangeKind::Disable => firewall_rules::set_rule_enabled(&change.name, false),
-                    ChangeKind::Enable => firewall_rules::set_rule_enabled(&change.name, true),
-                    ChangeKind::Profiles { arg, .. } => {
-                        firewall_rules::set_rule_profiles(&change.name, arg)
-                    }
-                };
+                let result = platform_apply(&change);
                 let _ = tx.send(ApplyMsg::RuleDone {
                     name: change.name,
                     error: result.err().map(|e| format!("{e:#}")),
@@ -1282,6 +1267,68 @@ pub fn run_preview(
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+}
+
+// ---- platform apply seam ----
+//
+// Windows toggles a flag on a rule through Set-NetFirewallRule. Linux has no
+// such flag on two of its three backends, so the same button runs a
+// different operation with a different blast radius — see
+// `linux::apply::Reversibility` and the warning the confirm dialog shows.
+
+/// Snapshot the whole firewall policy before anything is changed.
+#[cfg(not(target_os = "linux"))]
+fn platform_backup(
+    rules: &[RuleInfo],
+    _db_path: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
+    firewall_rules::backup_policy(rules)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_backup(
+    _rules: &[RuleInfo],
+    db_path: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
+    let backend = crate::linux::detect()?
+        .ok_or_else(|| anyhow::anyhow!("no supported Linux firewall backend is active"))?;
+    let db_path = db_path.ok_or_else(|| anyhow::anyhow!("preview mode — nothing to back up"))?;
+    crate::linux::apply::backup(backend, db_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_apply(change: &PlannedChange) -> anyhow::Result<()> {
+    match &change.kind {
+        ChangeKind::Disable => firewall_rules::set_rule_enabled(&change.name, false),
+        ChangeKind::Enable => firewall_rules::set_rule_enabled(&change.name, true),
+        ChangeKind::Profiles { arg, .. } => firewall_rules::set_rule_profiles(&change.name, arg),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_apply(change: &PlannedChange) -> anyhow::Result<()> {
+    let backend = crate::linux::detect()?
+        .ok_or_else(|| anyhow::anyhow!("no supported Linux firewall backend is active"))?;
+    match &change.kind {
+        ChangeKind::Disable => crate::linux::apply::disable(backend, &change.name),
+        // Only rules that exist are listed, and every one of them is live, so
+        // there is nothing to re-enable. Recreating a deleted rule would mean
+        // inventing its definition, which Firebreak will not do.
+        ChangeKind::Enable => Err(anyhow::anyhow!(
+            "re-enabling is not available on {}: a rule that was switched off here was removed, \
+             so restore it from the backup instead",
+            backend.label()
+        )),
+        ChangeKind::Profiles { arg, .. } => {
+            let zones: Vec<String> = arg
+                .split(',')
+                .map(str::trim)
+                .filter(|z| !z.is_empty() && *z != "Any")
+                .map(str::to_string)
+                .collect();
+            crate::linux::apply::set_scopes(backend, &change.name, &zones)
+        }
+    }
 }
 
 // small helpers shared with the paint module

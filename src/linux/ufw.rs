@@ -38,7 +38,7 @@ impl Family {
 
     /// Candidate rule-file locations, in order. Distros disagree: Debian and
     /// Ubuntu keep them under `/etc/ufw`, Fedora under `/var/lib/ufw`.
-    fn rules_files(self) -> [&'static str; 2] {
+    pub(super) fn rules_files(self) -> [&'static str; 2] {
         match self {
             Family::V4 => ["/etc/ufw/user.rules", "/var/lib/ufw/user.rules"],
             Family::V6 => ["/etc/ufw/user6.rules", "/var/lib/ufw/user6.rules"],
