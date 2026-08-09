@@ -9,6 +9,8 @@ mod elevation;
 mod event_query;
 mod filter_map;
 mod firewall_rules;
+#[cfg(target_os = "linux")]
+mod linux;
 mod listeners;
 mod model;
 mod pipeline;
@@ -91,9 +93,14 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--help" | "-h" => {
                 println!(
                     "Firebreak — Observe first. Enforce with confidence.\n\
-                     Windows Firewall rule-usage auditor.\n\n\
+                     Firewall rule-usage auditor for Windows and Linux.\n\n\
                      USAGE:\n\
                      \x20 firebreak [OPTIONS]\n\n\
+                     ON LINUX (ufw): runs as root, prints a rule-usage report and exits.\n\
+                     \x20 The kernel already counts packets per rule, so there is nothing to\n\
+                     \x20 enable and no waiting period — the first run has a real answer. The\n\
+                     \x20 collection options below are Windows-only and do not apply.\n\n\
+                     ON WINDOWS:\n\
                      Run without arguments for the app: it boots to the rule table, offers an\n\
                      'Enable connection auditing' button on first run, and on later runs\n\
                      ingests new 5156/5157 events and correlates them to firewall rules.\n\
@@ -155,6 +162,46 @@ fn main() -> Result<()> {
         return preview::run();
     }
 
+    // On Linux, take the counter-backend path when one of the supported
+    // firewall managers is actually in charge. Otherwise fall through to the
+    // shared flow, which still serves --ui-preview and reports honestly that
+    // the Windows evidence sources are unavailable here.
+    #[cfg(target_os = "linux")]
+    {
+        if !elevation::is_elevated() {
+            bail!(
+                "firebreak must run as root on Linux — the firewall's rule files, its packet \
+                 counters and /proc process attribution are all root-only. Re-run with sudo, \
+                 or use --ui-preview to look at the interface unprivileged."
+            );
+        }
+        if let Some(backend) = linux::detect()? {
+            return run_linux(&args, backend);
+        }
+        eprintln!(
+            "No supported Linux firewall backend is active (Firebreak supports ufw so far; \
+             firewalld and raw nftables are not wired up yet)."
+        );
+    }
+
+    run_windows(args)
+}
+
+/// The Linux run. Deliberately not the Windows flow with substitutions: on
+/// ufw there is no audit policy to enable, no event log to checkpoint and no
+/// collection clock to start, because the kernel is already counting. The
+/// first run has a real answer.
+#[cfg(target_os = "linux")]
+fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
+    let store = Store::open(&args.db_path)?;
+    let prior = store.load_counter_state()?;
+    let (report, next) = linux::analyze(backend, &prior)?;
+    store.save_counter_state(&next)?;
+    print_linux_report(backend, &report);
+    Ok(())
+}
+
+fn run_windows(args: Args) -> Result<()> {
     // clear a leftover exe image from a prior self-update
     update::cleanup_old();
 
@@ -251,6 +298,61 @@ fn dump_filters() -> Result<()> {
         filters.len()
     );
     Ok(())
+}
+
+/// Text report for a counter-based backend. Unused, used and unmeasurable
+/// are three separate sections on purpose: folding "we could not read this
+/// rule's counter" into the zero-hit list would invite the user to delete a
+/// rule Firebreak never actually observed.
+#[cfg(target_os = "linux")]
+fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
+    println!(
+        "Backend: {} ({})",
+        backend.label(),
+        if backend.needs_instrumentation() {
+            "collection must be enabled first"
+        } else {
+            "counters already running — no collection to enable"
+        }
+    );
+
+    let unused = report.unused();
+    println!(
+        "\n=== Never matched ({}) — disable candidates ===",
+        unused.len()
+    );
+    for row in &unused {
+        println!(
+            "  {}  [{} {}]",
+            row.rule.display_name, row.rule.direction, row.rule.action
+        );
+    }
+
+    let mut used: Vec<_> = report
+        .rows
+        .iter()
+        .filter(|r| r.hits.unwrap_or(0) > 0)
+        .collect();
+    used.sort_by_key(|r| std::cmp::Reverse(r.hits.unwrap_or(0)));
+    println!("\n=== Matched (most first) ===");
+    for row in used {
+        println!(
+            "  {:>12} packets  {}",
+            row.hits.unwrap_or(0),
+            row.rule.display_name
+        );
+    }
+
+    if !report.unmeasurable.is_empty() {
+        println!(
+            "\n=== Not measurable ({}) — active, but with no usable hit count ===",
+            report.unmeasurable.len()
+        );
+        println!("(these are NOT unused; Firebreak simply cannot count them)");
+        for (id, why) in &report.unmeasurable {
+            println!("  {id}\n      {why}");
+        }
+    }
 }
 
 fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {

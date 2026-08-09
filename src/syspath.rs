@@ -1,13 +1,31 @@
 //! Absolute paths for the system executables we spawn. An elevated process
 //! must not resolve tool names through the PATH/CreateProcess search order —
 //! a planted powershell.exe next to the binary or in a user-writable PATH
-//! entry would run with admin rights.
+//! entry would run with admin rights. The same rule holds for a root-run
+//! Linux process and `ufw`/`iptables`/`nft`.
 
 use std::path::PathBuf;
 
 /// %SystemRoot%, set by the session manager, not user-writable when elevated.
 fn system_root() -> PathBuf {
     PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()))
+}
+
+/// System directories a Linux tool may legitimately live in. Fixed list, in
+/// preference order — never `$PATH`, which a caller can point anywhere.
+#[cfg(unix)]
+const SYSTEM_BIN_DIRS: [&str; 4] = ["/usr/sbin", "/sbin", "/usr/bin", "/bin"];
+
+/// Resolve a Linux system tool (`ufw`, `iptables`, `nft`, `firewall-cmd`) to
+/// an absolute path under [`SYSTEM_BIN_DIRS`]. `None` when it isn't
+/// installed — callers treat that as "this backend isn't present", not as an
+/// error.
+#[cfg(unix)]
+pub fn system_tool(name: &str) -> Option<PathBuf> {
+    SYSTEM_BIN_DIRS
+        .iter()
+        .map(|d| PathBuf::from(d).join(name))
+        .find(|p| p.is_file())
 }
 
 /// Full path to a System32 tool, e.g. netsh.exe / auditpol.exe / wevtutil.exe.
