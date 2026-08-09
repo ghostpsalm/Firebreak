@@ -1285,7 +1285,11 @@ mod helpers {
     }
 
     pub fn stroke_bottom(painter: &egui::Painter, rect: Rect, color: Color32) {
-        painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, color));
+        painter.hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0_f32, color),
+        );
     }
 
     /// Clickable profile chip. `kept` = still in the rule's target scope;
@@ -1322,7 +1326,7 @@ mod helpers {
         let w = galley.size().x + 10.0;
         let h = 15.0;
         let r = Rect::from_min_size(top_left, Vec2::new(w, h));
-        ui.painter().rect(r, 0.0, bg, Stroke::new(1.0, border));
+        ui.painter().rect(r, 0.0, bg, Stroke::new(1.0_f32, border));
         ui.painter().galley(
             egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0),
             galley,
@@ -1333,7 +1337,7 @@ mod helpers {
             ui.painter().hline(
                 r.left() + 3.0..=r.right() - 3.0,
                 r.center().y,
-                Stroke::new(1.0, t::DISABLED()),
+                Stroke::new(1.0_f32, t::DISABLED()),
             );
         }
         let resp = if editable {
@@ -1345,7 +1349,7 @@ mod helpers {
             if re.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 ui.painter()
-                    .rect_stroke(r, 0.0, Stroke::new(1.0, t::ACCENT()));
+                    .rect_stroke(r, 0.0, Stroke::new(1.0_f32, t::ACCENT()));
             }
             Some(re)
         } else {

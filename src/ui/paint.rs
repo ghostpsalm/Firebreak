@@ -106,13 +106,13 @@ mod glyph {
     pub fn magnifier(p: &egui::Painter, center: Pos2, color: Color32) {
         let r = 4.0;
         let c = Pos2::new(center.x - 1.0, center.y - 1.0);
-        p.circle_stroke(c, r, Stroke::new(1.3, color));
+        p.circle_stroke(c, r, Stroke::new(1.3_f32, color));
         p.line_segment(
             [
                 Pos2::new(c.x + r * 0.7, c.y + r * 0.7),
                 Pos2::new(c.x + r * 1.6, c.y + r * 1.6),
             ],
-            Stroke::new(1.3, color),
+            Stroke::new(1.3_f32, color),
         );
     }
 
@@ -128,7 +128,7 @@ mod glyph {
         if filled {
             p.circle_filled(center, 7.5, circle);
         } else {
-            p.circle_stroke(center, 7.0, Stroke::new(1.3, circle));
+            p.circle_stroke(center, 7.0, Stroke::new(1.3_f32, circle));
         }
         let s = 7.5;
         p.line_segment(
@@ -136,14 +136,14 @@ mod glyph {
                 Pos2::new(center.x - s * 0.32, center.y + s * 0.02),
                 Pos2::new(center.x - s * 0.08, center.y + s * 0.30),
             ],
-            Stroke::new(1.5, mark),
+            Stroke::new(1.5_f32, mark),
         );
         p.line_segment(
             [
                 Pos2::new(center.x - s * 0.08, center.y + s * 0.30),
                 Pos2::new(center.x + s * 0.36, center.y - s * 0.26),
             ],
-            Stroke::new(1.5, mark),
+            Stroke::new(1.5_f32, mark),
         );
     }
 
@@ -159,7 +159,7 @@ mod glyph {
                     Pos2::new(d.x + c * 4.0, d.y + s * 4.0),
                     Pos2::new(d.x + c * 6.0, d.y + s * 6.0),
                 ],
-                Stroke::new(1.2, color),
+                Stroke::new(1.2_f32, color),
             );
         }
     }
@@ -176,14 +176,14 @@ mod glyph {
                 Pos2::new(center.x - 5.0, center.y),
                 Pos2::new(center.x + 5.0, center.y),
             ],
-            Stroke::new(1.2, color),
+            Stroke::new(1.2_f32, color),
         );
     }
 
     /// Windowed → offer maximize: a single square.
     pub fn maximize(p: &egui::Painter, center: Pos2, color: Color32) {
         let r = Rect::from_center_size(center, Vec2::splat(9.0));
-        p.rect_stroke(r, 0.0, Stroke::new(1.2, color));
+        p.rect_stroke(r, 0.0, Stroke::new(1.2_f32, color));
     }
 
     /// Maximized → offer restore: two overlapping squares.
@@ -194,14 +194,14 @@ mod glyph {
             Pos2::new(center.x - s / 2.0 + 2.0, center.y - s / 2.0 - 2.0),
             Vec2::splat(s),
         );
-        p.rect_stroke(back, 0.0, Stroke::new(1.1, color));
+        p.rect_stroke(back, 0.0, Stroke::new(1.1_f32, color));
         // front square (bottom-left), painted over with the panel fill behind
         let front = Rect::from_min_size(
             Pos2::new(center.x - s / 2.0 - 2.0, center.y - s / 2.0 + 2.0),
             Vec2::splat(s),
         );
         p.rect_filled(front, 0.0, crate::theme::TITLEBAR());
-        p.rect_stroke(front, 0.0, Stroke::new(1.1, color));
+        p.rect_stroke(front, 0.0, Stroke::new(1.1_f32, color));
     }
 }
 
@@ -239,7 +239,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         egui::Order::Foreground,
         egui::Id::new("winborder"),
     ))
-    .rect_stroke(screen.shrink(0.5), 0.0, Stroke::new(1.0, t::BORDER()));
+    .rect_stroke(screen.shrink(0.5), 0.0, Stroke::new(1.0_f32, t::BORDER()));
 }
 
 // ---- title bar ----
@@ -524,7 +524,7 @@ fn divider(ui: &mut egui::Ui) {
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, t::BORDER_LIGHT()),
+        Stroke::new(1.0_f32, t::BORDER_LIGHT()),
     );
     ui.add_space(24.0);
 }
@@ -547,7 +547,8 @@ fn flat_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect(rect, 0.0, fill, Stroke::new(1.0, border));
+    ui.painter()
+        .rect(rect, 0.0, fill, Stroke::new(1.0_f32, border));
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, t::INK());
     resp
@@ -587,7 +588,7 @@ fn settings_menu(
     let resp = area.show(ctx, |ui| {
         egui::Frame::none()
             .fill(t::TABLE_BG())
-            .stroke(Stroke::new(1.0, t::CONTROL_BORDER()))
+            .stroke(Stroke::new(1.0_f32, t::CONTROL_BORDER()))
             .inner_margin(egui::Margin::same(4.0))
             .show(ui, |ui| {
                 ui.set_width(202.0);
@@ -816,7 +817,7 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
         .frame(
             egui::Frame::none()
                 .fill(t::TABLE_BG())
-                .stroke(Stroke::new(1.0, t::CONTROL_BORDER())),
+                .stroke(Stroke::new(1.0_f32, t::CONTROL_BORDER())),
         )
         .show(ctx, |ui| {
             ui.add_space(18.0);
@@ -967,7 +968,8 @@ fn theme_toggle(ui: &mut egui::Ui, dark: bool) -> egui::Response {
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect(rect, 0.0, fill, Stroke::new(1.0, border));
+    ui.painter()
+        .rect(rect, 0.0, fill, Stroke::new(1.0_f32, border));
     if dark {
         glyph::sun(ui.painter(), rect.center(), t::SECONDARY());
     } else {
@@ -995,7 +997,8 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect(rect, 0.0, fill, Stroke::new(1.0, border));
+    ui.painter()
+        .rect(rect, 0.0, fill, Stroke::new(1.0_f32, border));
     ui.painter().galley(
         Pos2::new(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -1150,7 +1153,7 @@ fn filter_bar(app: &mut App, ctx: &egui::Context) {
                 // with its text indented past the icon (no overlap, icon
                 // doesn't move with the text)
                 let (field, _) = ui.allocate_exact_size(Vec2::new(224.0, CTRL_H), Sense::hover());
-                ui.painter().rect(field, 0.0, t::TABLE_BG(), Stroke::new(1.0, t::CONTROL_BORDER()));
+                ui.painter().rect(field, 0.0, t::TABLE_BG(), Stroke::new(1.0_f32, t::CONTROL_BORDER()));
                 glyph::magnifier(ui.painter(), Pos2::new(field.left() + 12.0, field.center().y), t::FAINT());
                 let text_area = Rect::from_min_max(
                     Pos2::new(field.left() + 24.0, field.top()),
@@ -1252,7 +1255,7 @@ fn segment_cell(
         t::TABLE_BG()
     };
     ui.painter().rect_filled(rect, 0.0, fill);
-    let border = Stroke::new(1.0, t::CONTROL_BORDER());
+    let border = Stroke::new(1.0_f32, t::CONTROL_BORDER());
     ui.painter().hline(rect.x_range(), rect.top() + 0.5, border);
     ui.painter()
         .hline(rect.x_range(), rect.bottom() - 0.5, border);
@@ -1456,7 +1459,7 @@ fn resize_handles(app: &mut App, ui: &mut egui::Ui, cols: &Cols, header_rect: Re
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             ui.painter()
-                .vline(x, header_rect.y_range(), Stroke::new(1.0, t::ACCENT()));
+                .vline(x, header_rect.y_range(), Stroke::new(1.0_f32, t::ACCENT()));
         }
         if resp.dragged() {
             // seed Rule's width the first time it's dragged
@@ -1604,7 +1607,7 @@ fn table_header(ui: &mut egui::Ui, app: &mut App, cols: &Cols) {
         cols.reviewed.0,
     ] {
         ui.painter()
-            .vline(x, rect.y_range(), Stroke::new(1.0, t::BORDER_LIGHT()));
+            .vline(x, rect.y_range(), Stroke::new(1.0_f32, t::BORDER_LIGHT()));
     }
     // resize handles on the fixed-column right edges
     resize_handles(app, ui, cols, rect);
@@ -1612,7 +1615,7 @@ fn table_header(ui: &mut egui::Ui, app: &mut App, cols: &Cols) {
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, t::CONTROL_BORDER()),
+        Stroke::new(1.0_f32, t::CONTROL_BORDER()),
     );
 }
 
@@ -1704,10 +1707,10 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     p.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, t::ROW_BORDER()),
+        Stroke::new(1.0_f32, t::ROW_BORDER()),
     );
     // faint column separators, aligned with the header's
-    let sep = Stroke::new(1.0, t::ROW_BORDER());
+    let sep = Stroke::new(1.0_f32, t::ROW_BORDER());
     for x in [
         cols.name.0,
         cols.dir.0,
@@ -2026,14 +2029,14 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         }
         ReviewState::Stale(at) => {
             ui.painter()
-                .circle_stroke(rv_center, 7.0, Stroke::new(1.3, t::ADVISORY()));
+                .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::ADVISORY()));
             // exclamation: stem + dot
             ui.painter().line_segment(
                 [
                     Pos2::new(rv_center.x, rv_center.y - 3.6),
                     Pos2::new(rv_center.x, rv_center.y + 0.8),
                 ],
-                Stroke::new(1.5, t::ADVISORY()),
+                Stroke::new(1.5_f32, t::ADVISORY()),
             );
             ui.painter().circle_filled(
                 Pos2::new(rv_center.x, rv_center.y + 3.4),
@@ -2044,7 +2047,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         }
         ReviewState::No => {
             ui.painter()
-                .circle_stroke(rv_center, 7.0, Stroke::new(1.3, t::CB_EMPTY_BORDER()));
+                .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::CB_EMPTY_BORDER()));
             "Mark this rule as reviewed/verified (does not change the firewall)".to_string()
         }
     };
@@ -2205,14 +2208,14 @@ fn draw_checkbox(
     } else {
         (t::CB_EMPTY_BORDER(), t::TABLE_BG(), CbMark::None, t::INK())
     };
-    p.rect(rect, 0.0, fill, Stroke::new(1.5, border));
+    p.rect(rect, 0.0, fill, Stroke::new(1.5_f32, border));
     match mark {
         CbMark::Check => glyph::check(p, rect.center(), 9.0, mark_col),
         CbMark::Dash => {
             p.hline(
                 rect.left() + 3.0..=rect.right() - 3.0,
                 rect.center().y,
-                Stroke::new(2.0, mark_col),
+                Stroke::new(2.0_f32, mark_col),
             );
         }
         CbMark::None => {}
@@ -2224,7 +2227,12 @@ fn draw_listen_chip(p: &egui::Painter, top_left: Pos2, text: &str) {
     let galley = p.layout_no_wrap(text.to_string(), font, t::LIVE_TEXT());
     let w = galley.size().x + 14.0 + 11.0;
     let rect = Rect::from_min_size(top_left, Vec2::new(w, 17.0));
-    p.rect(rect, 0.0, t::LIVE_BG(), Stroke::new(1.0, t::LIVE_BORDER()));
+    p.rect(
+        rect,
+        0.0,
+        t::LIVE_BG(),
+        Stroke::new(1.0_f32, t::LIVE_BORDER()),
+    );
     p.circle_filled(
         Pos2::new(rect.left() + 7.0, rect.center().y),
         3.0,
@@ -2302,7 +2310,7 @@ fn detail_panel(app: &mut App, ctx: &egui::Context) {
             ui.painter().vline(
                 ui.max_rect().left(),
                 ui.max_rect().y_range(),
-                Stroke::new(1.0, t::BORDER()),
+                Stroke::new(1.0_f32, t::BORDER()),
             );
             let r = &app.rows[ri];
             egui::ScrollArea::vertical()
@@ -2535,7 +2543,7 @@ fn section_sep(ui: &mut egui::Ui) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        Stroke::new(1.0, t::BORDER_LIGHT()),
+        Stroke::new(1.0_f32, t::BORDER_LIGHT()),
     );
 }
 
@@ -2630,13 +2638,13 @@ fn drawer(app: &mut App, ctx: &egui::Context) {
                     ui.painter().hline(
                         grip.x_range(),
                         grip.center().y,
-                        Stroke::new(2.0, t::ACCENT_TINT_BORDER()),
+                        Stroke::new(2.0_f32, t::ACCENT_TINT_BORDER()),
                     );
                 } else {
                     ui.painter().hline(
                         grip.x_range(),
                         grip.center().y,
-                        Stroke::new(1.0, t::BORDER_LIGHT()),
+                        Stroke::new(1.0_f32, t::BORDER_LIGHT()),
                     );
                 }
                 if gresp.dragged() {
@@ -2653,7 +2661,7 @@ fn drawer(app: &mut App, ctx: &egui::Context) {
             ui.painter().hline(
                 bar.x_range(),
                 bar.bottom() - 0.5,
-                Stroke::new(1.0, t::BORDER_LIGHT()),
+                Stroke::new(1.0_f32, t::BORDER_LIGHT()),
             );
             let mut x = bar.left();
             let n_actions = app.applicable_action_count();
@@ -2695,7 +2703,7 @@ fn drawer(app: &mut App, ctx: &egui::Context) {
                     ui.painter().hline(
                         tab_rect.x_range(),
                         tab_rect.top() + 1.0,
-                        Stroke::new(2.0, t::ACCENT()),
+                        Stroke::new(2.0_f32, t::ACCENT()),
                     );
                 } else if hovered {
                     ui.painter().rect_filled(tab_rect, 0.0, t::HOVER_WASH());
@@ -2703,7 +2711,7 @@ fn drawer(app: &mut App, ctx: &egui::Context) {
                 ui.painter().vline(
                     tab_rect.right(),
                     tab_rect.y_range(),
-                    Stroke::new(1.0, t::BORDER_LIGHT()),
+                    Stroke::new(1.0_f32, t::BORDER_LIGHT()),
                 );
                 ui.painter().galley(
                     tab_rect.center() - g.size() / 2.0,
@@ -2836,7 +2844,7 @@ fn actions_body(app: &mut App, ui: &mut egui::Ui) {
                 } else {
                     (t::ACCENT_TINT(), t::ACCENT_TINT_BORDER(), t::ACCENT())
                 };
-                ui.painter().rect(brect, 0.0, fill, Stroke::new(1.0, border));
+                ui.painter().rect(brect, 0.0, fill, Stroke::new(1.0_f32, border));
                 ui.painter().galley(brect.center() - g.size() / 2.0, ui.painter().layout_no_wrap(label, t::sans(11.5), txt), txt);
                 if bresp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -2846,7 +2854,7 @@ fn actions_body(app: &mut App, ui: &mut egui::Ui) {
                     stage = Some(i);
                 }
             }
-            ui.painter().hline(rr.x_range(), rr.bottom() - 0.5, Stroke::new(1.0, t::ROW_BORDER()));
+            ui.painter().hline(rr.x_range(), rr.bottom() - 0.5, Stroke::new(1.0_f32, t::ROW_BORDER()));
         }
         if let Some(i) = stage {
             let a = &crate::ui::actions_catalog()[i];
@@ -2898,7 +2906,7 @@ fn sockets_body(app: &App, ui: &mut egui::Ui) {
     p.hline(
         rect.x_range(),
         hr.bottom(),
-        Stroke::new(1.0, t::ROW_BORDER()),
+        Stroke::new(1.0_f32, t::ROW_BORDER()),
     );
 
     let mut list: Vec<&Listener> = app.listeners.iter().collect();
@@ -2960,7 +2968,7 @@ fn sockets_body(app: &App, ui: &mut egui::Ui) {
                 p.hline(
                     rect.x_range(),
                     rr.bottom() - 0.5,
-                    Stroke::new(1.0, t::CHROME()),
+                    Stroke::new(1.0_f32, t::CHROME()),
                 );
             }
         });
@@ -2988,8 +2996,11 @@ fn unattributed_body(app: &App, ui: &mut egui::Ui) {
     // permanent explainer
     let ex = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 26.0));
     ui.painter().rect_filled(ex, 0.0, t::RAISED());
-    ui.painter()
-        .hline(ex.x_range(), ex.bottom(), Stroke::new(1.0, t::ROW_BORDER()));
+    ui.painter().hline(
+        ex.x_range(),
+        ex.bottom(),
+        Stroke::new(1.0_f32, t::ROW_BORDER()),
+    );
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = rect.width() - 2.0 * PAGE;
     job.append("Traffic that Windows blocked by default policy — it matched no rule at all. Port scans and stray broadcasts land here. This is normal, not an error.", 0.0, fmt(t::italic(11.0), t::SECONDARY()));
@@ -3044,7 +3055,7 @@ fn unattributed_body(app: &App, ui: &mut egui::Ui) {
                 p.hline(
                     rect.x_range(),
                     rr.bottom() - 0.5,
-                    Stroke::new(1.0, t::CHROME()),
+                    Stroke::new(1.0_f32, t::CHROME()),
                 );
             }
         });
@@ -3076,7 +3087,7 @@ fn footer(app: &mut App, ctx: &egui::Context) {
             ui.painter().hline(
                 ui.max_rect().expand2(Vec2::new(PAGE, 0.0)).x_range(),
                 ui.max_rect().top(),
-                Stroke::new(1.0, border),
+                Stroke::new(1.0_f32, border),
             );
             if running {
                 footer_running(app, ui);
@@ -3337,7 +3348,7 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
         .frame(
             egui::Frame::none()
                 .fill(t::TABLE_BG())
-                .stroke(Stroke::new(1.0, t::CONTROL_BORDER())),
+                .stroke(Stroke::new(1.0_f32, t::CONTROL_BORDER())),
         )
         .show(ctx, |ui| {
             // title
@@ -3383,7 +3394,7 @@ fn confirm_modal(app: &mut App, ctx: &egui::Context) {
             pad20(ui, |ui| {
                 egui::Frame::none()
                     .fill(t::BACKUP_BG())
-                    .stroke(Stroke::new(1.0, t::BACKUP_BORDER()))
+                    .stroke(Stroke::new(1.0_f32, t::BACKUP_BORDER()))
                     .inner_margin(egui::Margin::symmetric(12.0, 10.0))
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
