@@ -18,6 +18,7 @@
 //! first useful answer.
 
 pub mod counters;
+pub mod firewalld;
 pub mod ufw;
 
 use anyhow::{Context, Result};
@@ -26,12 +27,24 @@ use anyhow::{Context, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Ufw,
+    Firewalld,
 }
 
 impl Backend {
     pub fn label(self) -> &'static str {
         match self {
             Backend::Ufw => "ufw",
+            Backend::Firewalld => "firewalld",
+        }
+    }
+
+    /// How this backend gets its evidence, for the report header.
+    pub fn evidence_summary(self) -> &'static str {
+        match self {
+            Backend::Ufw => "iptables counters, always on — nothing to enable",
+            Backend::Firewalld => {
+                "Firebreak's own shadow counter table (firewalld's is owner-locked)"
+            }
         }
     }
 
@@ -41,6 +54,10 @@ impl Backend {
     pub fn needs_instrumentation(self) -> bool {
         match self {
             Backend::Ufw => false,
+            // firewalld's own table is owner-locked and carries no counters,
+            // so Firebreak must install a shadow table before anything is
+            // measured — and then wait for traffic.
+            Backend::Firewalld => true,
         }
     }
 
@@ -50,6 +67,11 @@ impl Backend {
     pub fn scope_vocabulary(self) -> crate::model::ScopeVocabulary {
         match self {
             Backend::Ufw => crate::model::ScopeVocabulary::none(),
+            // zones are firewalld's scopes, and there can be any number
+            Backend::Firewalld => crate::model::ScopeVocabulary {
+                names: firewalld::read_zones().map(|z| z.names).unwrap_or_default(),
+                any_token: "Any".into(),
+            },
         }
     }
 }
@@ -72,6 +94,9 @@ pub fn detect() -> Result<Option<Backend>> {
             return Ok(Some(Backend::Ufw));
         }
     }
+    if crate::syspath::system_tool("firewall-cmd").is_some() && firewalld::is_running() {
+        return Ok(Some(Backend::Firewalld));
+    }
     Ok(None)
 }
 
@@ -91,6 +116,8 @@ pub struct RuleUsageRow {
 #[derive(Debug, Default)]
 pub struct Report {
     pub rows: Vec<RuleUsageRow>,
+    /// A caveat about how this backend collects, shown with the report.
+    pub note: Option<String>,
     /// Rules that exist but cannot be measured, with the reason. Kept apart
     /// from `rows` so nothing unmeasurable is ever rendered as unused.
     pub unmeasurable: Vec<(String, String)>,
@@ -120,7 +147,126 @@ pub struct PriorState {
 pub fn analyze(backend: Backend, prior: &PriorState) -> Result<(Report, PriorState)> {
     match backend {
         Backend::Ufw => analyze_ufw(prior),
+        Backend::Firewalld => analyze_firewalld(prior),
     }
+}
+
+/// Start collecting on a backend that needs instrumentation. No-op where the
+/// kernel already counts.
+pub fn enable_collection(backend: Backend) -> Result<String> {
+    match backend {
+        Backend::Ufw => Ok("ufw counters are always running — nothing to enable.".into()),
+        Backend::Firewalld => {
+            let zones = firewalld::read_zones()?;
+            firewalld::install(&zones.rules)?;
+            Ok(format!(
+                "Installed the shadow counter table for {} rule(s) across {} zone(s). \n{}",
+                zones.rules.len(),
+                zones.names.len(),
+                firewalld::REBOOT_CAVEAT
+            ))
+        }
+    }
+}
+
+/// Undo whatever `enable_collection` installed. Collected totals in the
+/// store are kept — this stops counting, it does not discard evidence.
+pub fn stop_collection(backend: Backend) -> Result<String> {
+    match backend {
+        Backend::Ufw => Ok("ufw needed no instrumentation, so there is nothing to remove.".into()),
+        Backend::Firewalld => {
+            firewalld::teardown()?;
+            Ok(format!(
+                "Removed the `{}` counter table. Collected totals are kept.",
+                firewalld::SHADOW_TABLE
+            ))
+        }
+    }
+}
+
+fn analyze_firewalld(prior: &PriorState) -> Result<(Report, PriorState)> {
+    use std::collections::BTreeMap;
+
+    let zones = firewalld::read_zones()?;
+    let mut report = Report::default();
+    report.unmeasurable.extend(zones.unmeasurable.clone());
+    report
+        .unmeasurable
+        .extend(firewalld::unexpressible(&zones.rules));
+
+    let ids: Vec<String> = zones.rules.iter().map(firewalld::FwdRule::id).collect();
+    let generation = counters::generation(&ids);
+    let generation_changed = prior.generation.as_deref().is_some_and(|g| g != generation);
+
+    // Firebreak does not instrument a host that has not asked for it. This
+    // backend *writes* to the kernel firewall to collect, which Windows
+    // never does, so installing the shadow table is an explicit decision
+    // (--enable-only) exactly as enabling audit policy is on Windows.
+    if !firewalld::table_exists() {
+        let mut report = report;
+        report.note = Some(format!(
+            "Collection is not enabled on this host, so there are no counts yet. Run \
+             `firebreak --enable-only` to install the shadow counter table, leave it to \
+             gather traffic, then run again. {}",
+            firewalld::REBOOT_CAVEAT
+        ));
+        for rule in &zones.rules {
+            report.rows.push(RuleUsageRow {
+                rule: rule.to_rule_info(),
+                hits: None,
+            });
+        }
+        return Ok((report, prior.clone()));
+    }
+
+    // The table must describe the rules as they are *now*. A changed rule
+    // set means a new table and therefore new counters, which the generation
+    // token turns into a banked lifetime rather than a decrease.
+    if generation_changed {
+        firewalld::install(&zones.rules)?;
+    }
+
+    let live = firewalld::read_counters()?;
+    let mut next = PriorState {
+        generation: Some(generation),
+        counters: BTreeMap::new(),
+    };
+
+    for (i, rule) in zones.rules.iter().enumerate() {
+        let id = rule.id();
+        let hits = if firewalld::match_expr(rule).is_none() {
+            // already reported as unmeasurable above
+            None
+        } else {
+            match live.get(&i) {
+                Some(raw) => {
+                    let state = prior
+                        .counters
+                        .get(&id)
+                        .copied()
+                        .unwrap_or_default()
+                        .observe(*raw, generation_changed);
+                    next.counters.insert(id.clone(), state);
+                    Some(state.total())
+                }
+                None => {
+                    report.unmeasurable.push((
+                        id.clone(),
+                        "The shadow counter table has no entry for this rule, so it could \
+                         not be counted."
+                            .into(),
+                    ));
+                    None
+                }
+            }
+        };
+        report.rows.push(RuleUsageRow {
+            rule: rule.to_rule_info(),
+            hits,
+        });
+    }
+    report.note = Some(firewalld::REBOOT_CAVEAT.to_string());
+    Ok((report, next))
 }
 
 fn analyze_ufw(prior: &PriorState) -> Result<(Report, PriorState)> {
@@ -235,6 +381,7 @@ mod tests {
         };
         let report = Report {
             rows: vec![mk("a", Some(0)), mk("b", None), mk("c", Some(5))],
+            note: None,
             unmeasurable: vec![],
         };
         let unused: Vec<&str> = report

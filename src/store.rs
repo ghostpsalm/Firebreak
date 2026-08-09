@@ -251,6 +251,18 @@ impl Store {
         })
     }
 
+    /// Drop all counter bookkeeping so totals restart. The generation goes
+    /// with it — leaving it behind would make the next run compare fresh
+    /// readings against a lifetime that no longer has any banked packets.
+    #[cfg(target_os = "linux")]
+    pub fn reset_counter_state(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM rule_counter;
+             DELETE FROM meta WHERE key = 'counter_generation';",
+        )?;
+        Ok(())
+    }
+
     /// Persist counter bookkeeping. Written as one transaction with the
     /// generation token: a generation saved without its counters (or the
     /// reverse) would make the next run mis-detect a reset and either bank a

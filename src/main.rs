@@ -179,8 +179,8 @@ fn main() -> Result<()> {
             return run_linux(&args, backend);
         }
         eprintln!(
-            "No supported Linux firewall backend is active (Firebreak supports ufw so far; \
-             firewalld and raw nftables are not wired up yet)."
+            "No supported Linux firewall backend is active (Firebreak supports ufw and \
+             firewalld; raw nftables is not wired up yet)."
         );
     }
 
@@ -189,13 +189,33 @@ fn main() -> Result<()> {
 
 /// The Linux run. Deliberately not the Windows flow with substitutions: on
 /// ufw there is no audit policy to enable, no event log to checkpoint and no
-/// collection clock to start, because the kernel is already counting. The
-/// first run has a real answer.
+/// collection clock to start, because the kernel is already counting, so the
+/// first run has a real answer. firewalld does need instrumenting, and there
+/// the existing collection flags carry over exactly:
+///
+/// * `--enable-only` installs the shadow counter table and exits, i.e. starts
+///   the clock — the same job it does on Windows.
+/// * `--restore-audit` removes it again, leaving collected totals intact.
 #[cfg(target_os = "linux")]
 fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
     // Declare the host's scope vocabulary before anything renders a rule.
     model::set_vocabulary(backend.scope_vocabulary());
+
+    if args.enable_only {
+        println!("{}", linux::enable_collection(backend)?);
+        return Ok(());
+    }
+    if args.restore_audit {
+        println!("{}", linux::stop_collection(backend)?);
+        return Ok(());
+    }
+
     let store = Store::open(&args.db_path)?;
+    if args.reset {
+        store.reset_counter_state()?;
+        println!("Cleared collected rule usage. Counting restarts from the next run.");
+        return Ok(());
+    }
     let prior = store.load_counter_state()?;
     let (report, next) = linux::analyze(backend, &prior)?;
     store.save_counter_state(&next)?;
@@ -311,14 +331,13 @@ fn dump_filters() -> Result<()> {
 #[cfg(target_os = "linux")]
 fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     println!(
-        "Backend: {} ({})",
+        "Backend: {} — {}",
         backend.label(),
-        if backend.needs_instrumentation() {
-            "collection must be enabled first"
-        } else {
-            "counters already running — no collection to enable"
-        }
+        backend.evidence_summary()
     );
+    if backend.needs_instrumentation() {
+        println!("Collection: opt-in (--enable-only), removable (--restore-audit)");
+    }
 
     let unused = report.unused();
     println!(
@@ -345,6 +364,10 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
             row.hits.unwrap_or(0),
             row.rule.display_name
         );
+    }
+
+    if let Some(note) = &report.note {
+        println!("\nNote: {note}");
     }
 
     if !report.unmeasurable.is_empty() {
