@@ -19,6 +19,7 @@
 
 pub mod counters;
 pub mod firewalld;
+pub mod proc;
 pub mod ufw;
 
 use anyhow::{Context, Result};
@@ -104,6 +105,10 @@ pub fn detect() -> Result<Option<Backend>> {
 #[derive(Debug, Clone)]
 pub struct RuleUsageRow {
     pub rule: crate::model::RuleInfo,
+    /// Processes currently listening behind the ports this rule opens, as
+    /// "name:port". Inference from the live listener set, not per-connection
+    /// attribution — see [`proc`].
+    pub listening: Vec<String>,
     /// Total packets matched across counter resets, or `None` when the
     /// rule's counters could not be read. `None` is not zero: zero means
     /// "never used, consider removing it" and `None` means "we do not know",
@@ -188,6 +193,7 @@ fn analyze_firewalld(prior: &PriorState) -> Result<(Report, PriorState)> {
     use std::collections::BTreeMap;
 
     let zones = firewalld::read_zones()?;
+    let live_listeners = proc::enumerate_listeners();
     let mut report = Report::default();
     report.unmeasurable.extend(zones.unmeasurable.clone());
     report
@@ -211,8 +217,10 @@ fn analyze_firewalld(prior: &PriorState) -> Result<(Report, PriorState)> {
             firewalld::REBOOT_CAVEAT
         ));
         for rule in &zones.rules {
+            let info = rule.to_rule_info();
             report.rows.push(RuleUsageRow {
-                rule: rule.to_rule_info(),
+                listening: crate::listeners::listeners_for_rule(&info, &live_listeners),
+                rule: info,
                 hits: None,
             });
         }
@@ -260,8 +268,10 @@ fn analyze_firewalld(prior: &PriorState) -> Result<(Report, PriorState)> {
                 }
             }
         };
+        let info = rule.to_rule_info();
         report.rows.push(RuleUsageRow {
-            rule: rule.to_rule_info(),
+            listening: crate::listeners::listeners_for_rule(&info, &live_listeners),
+            rule: info,
             hits,
         });
     }
@@ -273,6 +283,7 @@ fn analyze_ufw(prior: &PriorState) -> Result<(Report, PriorState)> {
     use std::collections::BTreeMap;
 
     let parsed = ufw::read_rules()?;
+    let live_listeners = proc::enumerate_listeners();
     let mut report = Report::default();
 
     for (tuple, reason) in &parsed.unreadable {
@@ -339,8 +350,10 @@ fn analyze_ufw(prior: &PriorState) -> Result<(Report, PriorState)> {
                 None
             }
         };
+        let info = rule.to_rule_info();
         report.rows.push(RuleUsageRow {
-            rule: rule.to_rule_info(),
+            listening: crate::listeners::listeners_for_rule(&info, &live_listeners),
+            rule: info,
             hits,
         });
     }
@@ -361,6 +374,7 @@ mod tests {
     #[test]
     fn unused_excludes_rules_whose_hits_are_unknown() {
         let mk = |name: &str, hits: Option<i64>| RuleUsageRow {
+            listening: Vec::new(),
             rule: crate::model::RuleInfo {
                 name: name.into(),
                 display_name: name.into(),

@@ -1,37 +1,70 @@
 # Firebreak
 
-On-demand Windows Firewall rule-usage auditor: correlates WFP audit events
-(Security log 5156/5157) with the live WFP filter table and
-`Get-NetFirewallRule` to find unused and over-broad rules. No service, no
-driver — a native Rust GUI (`eframe`/`egui`) that runs, reports, and exits.
-See `docs/ARCHITECTURE.md` for the design rationale (why the Security log,
-not `pfirewall.log` or a packet-capture driver) and `docs/internals.md` for
-the ingest pipeline.
+On-demand firewall rule-usage auditor for Windows and Linux: finds unused
+and over-broad rules. No service, no driver — it runs, reports, and exits.
+
+- **Windows** correlates WFP audit events (Security log 5156/5157) with the
+  live WFP filter table and `Get-NetFirewallRule`. Native Rust GUI
+  (`eframe`/`egui`).
+- **Linux** reads per-rule packet counters instead, because there is no
+  Linux event carrying rule identity and process identity together. See
+  `docs/spike-linux-port.md` for the full evidence survey behind that call.
+
+See `docs/ARCHITECTURE.md` for the Windows design rationale (why the
+Security log, not `pfirewall.log` or a packet-capture driver) and
+`docs/internals.md` for the ingest pipeline.
 
 ## Stack
 
 - Rust, edition 2021, GUI via `eframe`/`egui` 0.29.
-- **Windows-only in practice.** Almost every real code path is
-  `#[cfg(windows)]` — WFP, the Security Event Log, audit policy, elevation.
-  The non-Windows fallback paths exist only so the pure logic (parsing,
-  scoping, aggregation) can be unit-tested from Linux.
+- **Two real targets.** The Windows evidence layer (WFP, Security Event Log,
+  audit policy, PowerShell rule enumeration) is `#[cfg(windows)]`; the Linux
+  one lives under `src/linux/` and is `#[cfg(target_os = "linux")]`. Logic
+  that is portable but only *called* from one platform is
+  `#[cfg(any(windows, test))]` so it stays unit-tested from either host.
 - Cross-compiled from Linux to `x86_64-pc-windows-gnu` (needs
   `mingw-w64` + `rustup target add x86_64-pc-windows-gnu`); native build on
-  Windows works too. `cargo test` runs cross-platform — the tests exercise
-  the `#[cfg(not(windows))]`-safe logic, not the WinAPI calls themselves.
-- `rusqlite` (bundled) for the local `%ProgramData%\firebreak\firebreak.db`.
+  Windows works too.
+- `rusqlite` (bundled) for the local store —
+  `%ProgramData%\firebreak\firebreak.db` or `/var/lib/firebreak/firebreak.db`,
+  both created private and refused if another principal owns them
+  (`src/secure_dir.rs`).
 - `minisign-verify` for self-update signature checking (fails closed —
   see `signing/README.md` and `src/update.rs`).
+
+## Linux backends (`src/linux/`)
+
+| backend | rule identity | evidence | instrument? |
+|---|---|---|---|
+| ufw | `### tuple ###` in `user.rules` | iptables counters, always on | no |
+| firewalld | zone + service/port | Firebreak's own shadow nft table | **yes** |
+
+Three things to know before touching them:
+
+- **A kernel counter is a gauge, not an event stream.** It resets on reboot,
+  reload and `iptables -Z`. `linux/counters.rs` banks the old lifetime
+  instead of re-adding raw readings. Never add a raw counter to a total.
+- **firewalld's nft table is `flags owner`** — the kernel refuses to let any
+  process add a counter to it, sudo included. Hence the shadow table, at
+  input priority 300 so a hit means "firewalld allowed this".
+- **Unmeasurable is not unused.** Rich rules, ipsets, protocol-only entries
+  and unparseable tuples are reported in their own section. Folding them
+  into the zero-hit list would invite deleting a load-bearing rule.
+
+Rule scope is a backend-supplied vocabulary (`model::ScopeVocabulary`), not
+Windows' Domain/Private/Public: firewalld zones are arbitrary and ufw has no
+scopes at all.
 
 ## Gate
 
 `./scripts/gate.sh` — fmt, clippy, test. Must be green before every commit.
 
-**Clippy lints the `x86_64-pc-windows-gnu` target, not native Linux.**
-Because of the `#[cfg(windows)]` gating above, linting the native target
-reports huge swaths of real, used code as dead — it's noise, not signal.
-The gate detects the host and lints natively only when actually run on
-Windows.
+**On a Linux host it lints both targets**: `x86_64-pc-windows-gnu` (the
+Windows code, only checkable by cross-compiling) and native (the Linux
+backends). The native lint used to be skipped because Windows-only code
+compiled on Linux read as dead; that is now stated as `#[cfg(windows)]`
+rather than suppressed, so the native lint is signal — and it is the only
+thing that lints `src/linux/` at all. Don't drop it.
 
 CI (`.github/workflows/ci.yml`) runs the same gate on push/PR to `main`,
 installing `mingw-w64` first.
@@ -65,6 +98,15 @@ installing `mingw-w64` first.
   every read in the evidence loop (Security log, audit policy, WFP filter
   enum, the ACL-protected local DB) is admin-bound. Don't "fix" this
   without reading that doc first; it's a considered verdict, not drift.
+  Linux needs root for the same reason: ufw's rule files, the iptables
+  counters and `/proc/<pid>/exe` for other users' processes. Without it
+  process attribution *silently shrinks* rather than failing, which is why
+  the Linux path refuses to run unprivileged instead of degrading.
+- **On firewalld, collecting means writing to the kernel firewall.** The
+  Windows side never does this — it only reads. The shadow table is
+  therefore opt-in (`--enable-only`) and removable (`--restore-audit`), a
+  plain run never installs it, and the table carries no verdicts so it
+  cannot change any packet's fate. Keep all four of those properties.
 - **Self-update is a supply-chain surface**: the in-app updater downloads
   a release asset and its `.minisig` signature, verifying against a pinned
   public key (`TRUSTED_PUBLIC_KEY` in `src/update.rs`) before installing.

@@ -96,10 +96,16 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      Firewall rule-usage auditor for Windows and Linux.\n\n\
                      USAGE:\n\
                      \x20 firebreak [OPTIONS]\n\n\
-                     ON LINUX (ufw): runs as root, prints a rule-usage report and exits.\n\
-                     \x20 The kernel already counts packets per rule, so there is nothing to\n\
-                     \x20 enable and no waiting period — the first run has a real answer. The\n\
-                     \x20 collection options below are Windows-only and do not apply.\n\n\
+                     ON LINUX: runs as root, prints a rule-usage report and exits.\n\
+                     \x20 ufw       the kernel already counts every rule, so there is nothing\n\
+                     \x20           to enable and no waiting period — the first run answers.\n\
+                     \x20 firewalld its nftables table is owner-locked and carries no counters,\n\
+                     \x20           so --enable-only installs Firebreak's own shadow counter\n\
+                     \x20           table and --restore-audit removes it again. A plain run\n\
+                     \x20           never instruments the host.\n\
+                     \x20 --reset   clear collected totals and start counting over.\n\
+                     \x20 --db      database path (default /var/lib/firebreak/firebreak.db)\n\
+                     \x20 The remaining options below are Windows-only.\n\n\
                      ON WINDOWS:\n\
                      Run without arguments for the app: it boots to the rule table, offers an\n\
                      'Enable connection auditing' button on first run, and on later runs\n\
@@ -340,15 +346,35 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     }
 
     let unused = report.unused();
+    // A never-matched rule that still has something listening behind it is a
+    // different conversation from one with nothing there: the first may just
+    // be waiting for its first connection.
+    let (idle, empty): (Vec<&&linux::RuleUsageRow>, Vec<&&linux::RuleUsageRow>) =
+        unused.iter().partition(|r| !r.listening.is_empty());
     println!(
-        "\n=== Never matched ({}) — disable candidates ===",
-        unused.len()
+        "\n=== Never matched, nothing listening ({}) — strongest disable candidates ===",
+        empty.len()
     );
-    for row in &unused {
+    for row in &empty {
         println!(
             "  {}  [{} {}]",
             row.rule.display_name, row.rule.direction, row.rule.action
         );
+    }
+
+    if !idle.is_empty() {
+        println!(
+            "\n=== Never matched, but something is listening ({}) ===",
+            idle.len()
+        );
+        println!("(the port is open and a process is behind it — it may simply be idle)");
+        for row in &idle {
+            println!(
+                "  {}  <- {}",
+                row.rule.display_name,
+                row.listening.join(", ")
+            );
+        }
     }
 
     let mut used: Vec<_> = report
@@ -359,8 +385,13 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     used.sort_by_key(|r| std::cmp::Reverse(r.hits.unwrap_or(0)));
     println!("\n=== Matched (most first) ===");
     for row in used {
+        let behind = if row.listening.is_empty() {
+            String::new()
+        } else {
+            format!("  <- {}", row.listening.join(", "))
+        };
         println!(
-            "  {:>12} packets  {}",
+            "  {:>12} packets  {}{behind}",
             row.hits.unwrap_or(0),
             row.rule.display_name
         );
