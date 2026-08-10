@@ -872,9 +872,10 @@ impl App {
     #[cfg(windows)]
     fn spawn_import(&mut self, path: PathBuf, append: bool, egui_ctx: egui::Context) {
         // stable per-process import scratch DB
-        let db = self.import_db.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("firebreak-import-{}.db", std::process::id()))
-        });
+        let db = self
+            .import_db
+            .clone()
+            .unwrap_or_else(|| crate::syspath::scratch_path("import", "db"));
         self.import_db = Some(db.clone());
         let reset_first = !append;
         self.phase = Phase::Loading;
@@ -904,7 +905,7 @@ impl App {
     /// fresh read-only review session.
     #[cfg(windows)]
     pub(crate) fn spawn_import_bundle(&mut self, path: PathBuf, egui_ctx: egui::Context) {
-        let db = std::env::temp_dir().join(format!("firebreak-import-{}.db", std::process::id()));
+        let db = crate::syspath::scratch_path("import", "db");
         self.import_db = Some(db.clone());
         self.phase = Phase::Loading;
         self.audit_checked = true;

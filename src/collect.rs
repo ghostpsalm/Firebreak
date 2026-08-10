@@ -101,8 +101,7 @@ pub fn collect(out_zip: &Path, progress: &dyn Fn(&str)) -> Result<()> {
     };
 
     progress("Exporting filtered Security events (this can take a while)…");
-    let tmp_evtx =
-        std::env::temp_dir().join(format!("firebreak-collect-{}.evtx", std::process::id()));
+    let tmp_evtx = crate::syspath::scratch_path("collect", "evtx");
     let _ = std::fs::remove_file(&tmp_evtx); // wevtutil refuses to overwrite
     let out = crate::syspath::command(crate::syspath::system32_tool("wevtutil.exe"))
         .args([
@@ -187,12 +186,19 @@ pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
         .filter_map(|(k, v)| Some((k.parse().ok()?, crate::scope::Profile::from_label(v))))
         .collect();
 
-    let events_path =
-        std::env::temp_dir().join(format!("firebreak-import-{}.evtx", std::process::id()));
+    let events_path = crate::syspath::scratch_path("import", "evtx");
     let mut entry = z
         .by_name("events.evtx")
         .map_err(|_| anyhow!("bundle has no events.evtx"))?;
-    let mut out = std::fs::File::create(&events_path).context("extracting events.evtx")?;
+    // create_new: if anything already occupies this path — a pre-planted
+    // symlink, a collision — fail rather than write through it. With the
+    // nonce in the name (issue #10) that should be unreachable; this is the
+    // check that makes "should" unnecessary.
+    let mut out = std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(&events_path)
+        .context("extracting events.evtx")?;
     // One byte past the cap: if the entry yields it, it is over.
     let extracted = std::io::copy(&mut entry.by_ref().take(EVENTS_ENTRY_CAP + 1), &mut out)
         .context("extracting events.evtx")
@@ -388,6 +394,28 @@ mod tests {
             z.write_all(&chunk[..n]).unwrap();
             left -= n;
         }
+    }
+
+    /// Extractions no longer live at a name anyone can predict (issue #10),
+    /// so a test that wants to know what a run left behind has to look for
+    /// it: every `firebreak-import-<pid>-<nonce>.evtx` belonging to `pid`.
+    /// Returns (path, size) for each, and removes them.
+    fn sweep_extractions(pid: u32) -> Vec<(PathBuf, u64)> {
+        let prefix = format!("firebreak-import-{pid}-");
+        let mut found = Vec::new();
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return found;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&prefix) && name.ends_with(".evtx") {
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                let path = e.path();
+                let _ = std::fs::remove_file(&path);
+                found.push((path, size));
+            }
+        }
+        found
     }
 
     fn write_manifest(z: &mut zip::ZipWriter<std::fs::File>) {
@@ -597,10 +625,8 @@ mod tests {
         // size guard means it can never delete the 12-byte file
         // bundle_round_trip is asserting on — both derive the same temp path
         // from the pid and run in parallel threads of one test binary.
-        let leftover =
-            std::env::temp_dir().join(format!("firebreak-import-{}.evtx", std::process::id()));
-        if std::fs::metadata(&leftover).map(|m| m.len()).unwrap_or(0) > 64 * 1024 * 1024 {
-            let _ = std::fs::remove_file(&leftover);
+        for (path, size) in sweep_extractions(std::process::id()) {
+            let _ = (path, size);
         }
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -671,11 +697,15 @@ mod tests {
         let child_pid = child.id();
         let out = child.wait_with_output().expect("waiting for the child");
 
-        let leftover = std::env::temp_dir().join(format!("firebreak-import-{child_pid}.evtx"));
-        let left = std::fs::metadata(&leftover).map(|m| m.len()).unwrap_or(0);
         // Sweep before asserting, as the sibling test does: on a red run a
         // panic would otherwise leave the gigabyte behind every time.
-        let _ = std::fs::remove_file(&leftover);
+        let swept = sweep_extractions(child_pid);
+        let left: u64 = swept.iter().map(|(_, n)| *n).sum();
+        let where_ = swept
+            .iter()
+            .map(|(p, _)| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(
@@ -685,11 +715,10 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         assert_eq!(
-            left,
-            0,
+            left, 0,
             "refusing the bundle left a {left}-byte partial extraction at {} — a rejected \
              import must not cost the disk it was refused",
-            leftover.display()
+            where_
         );
     }
 
@@ -841,11 +870,15 @@ mod tests {
         let child_pid = child.id();
         let out = child.wait_with_output().expect("waiting for the child");
 
-        let leftover = std::env::temp_dir().join(format!("firebreak-import-{child_pid}.evtx"));
-        let left = std::fs::metadata(&leftover).map(|m| m.len()).ok();
         // Sweep before asserting: on a red run a panic would otherwise leave
         // the partial extraction behind on every run.
-        let _ = std::fs::remove_file(&leftover);
+        let swept = sweep_extractions(child_pid);
+        let left: Option<u64> = swept.iter().map(|(_, n)| *n).max();
+        let where_ = swept
+            .iter()
+            .map(|(p, _)| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(
@@ -860,7 +893,7 @@ mod tests {
             "a failed extraction left {} bytes behind at {} — a refused import \
              must not cost the disk it was refused, however the extraction failed",
             left.unwrap_or(0),
-            leftover.display()
+            where_
         );
     }
 

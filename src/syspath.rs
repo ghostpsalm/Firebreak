@@ -52,3 +52,44 @@ pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
     };
     c
 }
+
+/// A path under the system temp directory that an onlooker cannot predict.
+///
+/// The paths this replaces were `firebreak-<thing>-<pid>`, which anyone on
+/// the box can guess: pid space is small and enumerable. That matters most
+/// on exactly the path that needs it least — bundle import — because that
+/// code exists to handle a file from *another* machine, and a pre-planted
+/// symlink at a guessable name redirects the write. `%TEMP%` is normally
+/// per-user, so this is defence in depth rather than the only barrier, but
+/// it costs nothing to not rely on that.
+///
+/// The nonce comes from `RandomState`, whose keys the standard library seeds
+/// from the OS random source. No crypto claim is made or needed here: the
+/// requirement is unpredictability by another process, not secrecy.
+pub fn scratch_path(stem: &str, ext: &str) -> PathBuf {
+    use std::hash::{BuildHasher, Hasher};
+    let nonce = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    std::env::temp_dir().join(format!(
+        "firebreak-{stem}-{}-{nonce:016x}.{ext}",
+        std::process::id()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two calls must not collide, or a second import would land on the
+    /// first one's file — and the point of the nonce is that neither is
+    /// guessable from outside.
+    #[test]
+    fn scratch_paths_differ_every_time() {
+        let a = scratch_path("import", "db");
+        let b = scratch_path("import", "db");
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains("firebreak-import-"));
+        assert_eq!(a.extension().unwrap(), "db");
+    }
+}

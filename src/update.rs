@@ -245,8 +245,7 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
         Ok(bytes) => Ok(bytes),
         Err(e) => {
             eprintln!("WinHTTP fetch failed ({e:#}); falling back to PowerShell");
-            let dest =
-                std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
+            let dest = crate::syspath::scratch_path("fetch", "bin");
             let _ = std::fs::remove_file(&dest);
             let script = format!(
                 "$ErrorActionPreference='Stop'; \
@@ -287,7 +286,7 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
 /// watcher and the fetch itself are looking at the same file.
 #[cfg(not(windows))]
 fn fetch_dest() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()))
+    crate::syspath::scratch_path("fetch", "bin")
 }
 
 #[cfg(not(windows))]
