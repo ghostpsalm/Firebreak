@@ -1058,8 +1058,27 @@ fn warning_band(app: &mut App, ctx: &egui::Context, hours: f64) {
                     0.0,
                     fmt(t::sans(12.0), t::ADVISORY_TEXT()),
                 );
-                ui.label(job);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // wrap to what is left once Acknowledge has its room, or a
+                // narrow window pushes the link off the right edge
+                let ack = ui
+                    .painter()
+                    .layout_no_wrap(
+                        "Acknowledge".to_string(),
+                        t::sans(12.0),
+                        t::ADVISORY_HEADER(),
+                    )
+                    .size()
+                    .x;
+                let w = (ui.available_width() - ack - 16.0).max(120.0);
+                job.wrap.max_width = w;
+                ui.allocate_ui_with_layout(
+                    Vec2::new(w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.label(job);
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                     if link(ui, "Acknowledge", t::ADVISORY_HEADER()).clicked() {
                         app.warning_acked = true;
                     }
@@ -1081,17 +1100,20 @@ fn note_band(app: &App, ctx: &egui::Context) {
                 ui.max_rect().expand2(Vec2::new(PAGE, 8.0)),
                 t::ADVISORY_BORDER(),
             );
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("▲")
-                        .font(t::sans(12.0))
-                        .color(t::ADVISORY()),
-                );
+            ui.horizontal_top(|ui| {
+                // drawn warning triangle, as in the warning band — the UI font
+                // has no ▲ and rendered a tofu box instead
+                let (r, _) = ui.allocate_exact_size(Vec2::new(15.0, 15.0), Sense::hover());
+                glyph::warn_sign(ui.painter(), r.center(), 13.0, t::ADVISORY());
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(&app.ctx_info.note)
-                        .font(t::sans(12.0))
-                        .color(t::ADVISORY_TEXT()),
+                // notes are whole sentences; without this they run off the window
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&app.ctx_info.note)
+                            .font(t::sans(12.0))
+                            .color(t::ADVISORY_TEXT()),
+                    )
+                    .wrap(),
                 );
             });
         });
