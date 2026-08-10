@@ -102,7 +102,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      Firewall rule-usage auditor for Windows and Linux.\n\n\
                      USAGE:\n\
                      \x20 firebreak [OPTIONS]\n\n\
-                     ON LINUX: runs as root, prints a rule-usage report and exits.\n\
+                     ON LINUX: runs as root and opens the same window as Windows;\n\
+                     \x20 --no-ui prints the rule-usage report and exits instead.\n\
                      \x20 ufw       the kernel already counts every rule, so there is nothing\n\
                      \x20           to enable and no waiting period — the first run answers.\n\
                      \x20 firewalld its nftables table is owner-locked and carries no counters,\n\
