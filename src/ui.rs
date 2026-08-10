@@ -191,6 +191,15 @@ fn removed_labels(orig: &crate::model::ScopeSet, target: &crate::model::ScopeSet
     orig.removed_since(target).join(", ")
 }
 
+/// The result of one reviewed-mark write, back from its worker.
+struct ReviewOutcome {
+    /// Rule name, not row index — the table may have been rebuilt since.
+    name: String,
+    /// What the row becomes if the write succeeded.
+    next: ReviewState,
+    error: Option<String>,
+}
+
 /// Streamed apply progress — one message per step so the footer shows
 /// "2 of 3" and rows show per-rule status/failures.
 enum ApplyMsg {
@@ -481,7 +490,11 @@ pub struct App {
 
     confirm_open: bool,
     apply: Option<ApplyState>,
+    /// The last action's outcome, rendered as a dismissable strip above the
+    /// table. Written by every path that can fail; `status_error` decides
+    /// whether it reads as a failure or as a receipt.
     status: String,
+    status_error: bool,
     /// user acknowledged the young-evidence warning band (dismisses it)
     warning_acked: bool,
     /// persisted drawer height across frames/toggles
@@ -491,6 +504,13 @@ pub struct App {
     /// The Updates dialog. Its own window, not a section of About — see
     /// `paint::update_box`.
     update_open: bool,
+    /// Reviewed-mark writes in flight, by rule name.
+    review_pending: std::collections::HashSet<String>,
+    review_tx: std::sync::mpsc::Sender<ReviewOutcome>,
+    review_rx: Receiver<ReviewOutcome>,
+    /// Kept so a background write can ask for a repaint when it lands.
+    /// `None` in tests and preview, where there is no live context.
+    egui_ctx: Option<egui::Context>,
     pub(crate) dark_mode: bool,
     pub(crate) update: std::sync::Arc<std::sync::Mutex<UpdateState>>,
     /// lazily-loaded app logo for the title bar
@@ -536,6 +556,7 @@ fn auto_refresh_ok(
 
 impl App {
     fn base(db_path: Option<PathBuf>) -> Self {
+        let (review_tx, review_rx) = std::sync::mpsc::channel();
         App {
             db_path,
             phase: Phase::Loading,
@@ -566,11 +587,16 @@ impl App {
             confirm_open: false,
             apply: None,
             status: String::new(),
+            status_error: false,
             warning_acked: false,
             drawer_height: 190.0,
             settings_open: false,
             about_open: false,
             update_open: false,
+            review_pending: std::collections::HashSet::new(),
+            review_tx,
+            review_rx,
+            egui_ctx: None,
             dark_mode: false,
             update: std::sync::Arc::new(std::sync::Mutex::new(UpdateState::Idle)),
             logo: None,
@@ -595,6 +621,7 @@ impl App {
 
     fn new_live(db_path: PathBuf, egui_ctx: egui::Context) -> Self {
         let mut app = App::base(Some(db_path.clone()));
+        app.egui_ctx = Some(egui_ctx.clone());
         app.spawn_detect(db_path, egui_ctx);
         app
     }
@@ -704,29 +731,91 @@ impl App {
     /// rule's current definition fingerprint; un-reviewing (from either the
     /// reviewed or the stale state) deletes the record.
     pub(crate) fn toggle_reviewed(&mut self, ri: usize) {
-        let (next, write): (ReviewState, Option<Option<(String, String)>>) = {
+        let (next, op): (ReviewState, Option<(String, String)>) = {
             let r = &self.rows[ri];
             match r.reviewed {
-                ReviewState::Yes(_) => (ReviewState::No, Some(None)),
+                ReviewState::Yes(_) => (ReviewState::No, None),
                 _ => {
-                    let at = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                    // The date the user sees is the date it was *their*
+                    // calendar day, not UTC's — near midnight the two differ
+                    // and a mark dated tomorrow reads as a bug in the tool.
+                    let at = chrono::Local::now().format("%Y-%m-%d").to_string();
                     (
                         ReviewState::Yes(at.clone()),
-                        Some(Some((r.rule.fingerprint(), at))),
+                        Some((r.rule.fingerprint(), at)),
                     )
                 }
             }
         };
-        if let (Some(db), Some(op)) = (self.db_path.clone(), write) {
-            let name = self.rows[ri].rule.name.clone();
-            if let Ok(store) = crate::store::Store::open(&db) {
-                let _ = match op {
-                    Some((fp, at)) => store.set_reviewed(&name, &fp, &at),
-                    None => store.clear_reviewed(&name),
-                };
+        let name = self.rows[ri].rule.name.clone();
+        let Some(db) = self.db_path.clone() else {
+            // preview mode: nothing to persist to, so nothing can fail
+            self.rows[ri].reviewed = next;
+            return;
+        };
+
+        // A reviewed mark is an attestation — "I looked at this rule and it
+        // is fine" — so the dot may only change once the write has actually
+        // landed. It is written on a worker because the ingest transaction
+        // can hold the write lock for seconds, and blocking the frame for
+        // SQLite's busy timeout freezes the whole window on one click.
+        self.review_pending.insert(name.clone());
+        let tx = self.review_tx.clone();
+        let ctx = self.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let result = crate::store::Store::open(&db).and_then(|store| match &op {
+                Some((fp, at)) => store.set_reviewed(&name, fp, at),
+                None => store.clear_reviewed(&name),
+            });
+            let _ = tx.send(ReviewOutcome {
+                name,
+                next,
+                error: result.err().map(|e| format!("{e:#}")),
+            });
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Report the outcome of an action to the user. Every failure path goes
+    /// through here: a silent failure in a tool whose product is evidence is
+    /// worse than a loud one.
+    pub(crate) fn report(&mut self, text: impl Into<String>, error: bool) {
+        self.status = text.into();
+        self.status_error = error;
+    }
+
+    /// Apply finished reviewed-mark writes.
+    ///
+    /// Rows are matched by rule name rather than index: a refresh may have
+    /// replaced the table between the click and the write landing, and
+    /// marking whatever now sits at that index would attest to the wrong
+    /// rule.
+    fn poll_reviews(&mut self) {
+        let mut outcomes = Vec::new();
+        while let Ok(o) = self.review_rx.try_recv() {
+            outcomes.push(o);
+        }
+        for o in outcomes {
+            self.review_pending.remove(&o.name);
+            match o.error {
+                None => {
+                    if let Some(r) = self.rows.iter_mut().find(|r| r.rule.name == o.name) {
+                        r.reviewed = o.next;
+                    }
+                    self.status.clear();
+                    self.status_error = false;
+                }
+                // the row keeps whatever it showed before: nothing was saved
+                Some(e) => self.report(format!("Reviewed status not saved: {e}"), true),
             }
         }
-        self.rows[ri].reviewed = next;
+    }
+
+    /// Whether this rule's mark is still being written.
+    pub(crate) fn review_in_flight(&self, name: &str) -> bool {
+        self.review_pending.contains(name)
     }
 
     /// Query GitHub for the latest release on a worker thread.
@@ -918,7 +1007,7 @@ impl App {
 
     fn start_enable(&mut self, egui_ctx: &egui::Context) {
         let Some(db_path) = self.db_path.clone() else {
-            self.status = "Preview mode — enable is disabled.".into();
+            self.report("Preview mode — enable is disabled.", false);
             return;
         };
         self.phase = Phase::Enabling;
@@ -989,7 +1078,7 @@ impl App {
                         self.last_read = std::time::Instant::now();
                     }
                     self.phase = Phase::Ready;
-                    self.status = format!("Ingested {ev} events ({un} unattributed).");
+                    self.report(format!("Ingested {ev} events ({un} unattributed)."), false);
                     self.worker_rx = None;
                 }
                 WorkerMsg::Failed(e) => {
@@ -998,7 +1087,7 @@ impl App {
                     } else {
                         Phase::Ready
                     };
-                    self.status = format!("Error: {e}");
+                    self.report(format!("Error: {e}"), true);
                     self.worker_rx = None;
                 }
             }
@@ -1190,7 +1279,7 @@ impl App {
             if !any_fail && !backup_failed {
                 let n = apply.done;
                 self.apply = None;
-                self.status = format!("Applied {n} change(s).");
+                self.report(format!("Applied {n} change(s)."), false);
             }
         }
     }
@@ -1334,6 +1423,7 @@ mod paint;
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
+        self.poll_reviews();
         self.poll_apply(ctx);
         #[cfg(target_os = "linux")]
         self.maybe_auto_refresh(ctx);
@@ -1630,6 +1720,193 @@ mod helpers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scratch DB directory, removed on drop.
+    struct TempDb {
+        dir: PathBuf,
+    }
+
+    impl TempDb {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "firebreak-ui-test-{}-{}",
+                tag,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            TempDb { dir }
+        }
+        fn path(&self) -> PathBuf {
+            self.dir.join("t.db")
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn review_label(r: &ReviewState) -> String {
+        match r {
+            ReviewState::No => "No".to_string(),
+            ReviewState::Stale(at) => format!("Stale({at})"),
+            ReviewState::Yes(at) => format!("Yes({at})"),
+        }
+    }
+
+    fn unreviewed_row(name: &str) -> RuleRow {
+        let rule: RuleInfo = serde_json::from_str(&format!(
+            r#"{{"Name":"{name}","DisplayName":"{name}","Enabled":"True","Direction":"Inbound",
+                "Action":"Allow","Profile":"Private","Protocol":"TCP","LocalPort":"22"}}"#
+        ))
+        .unwrap();
+        RuleRow {
+            target_enabled: rule.is_enabled(),
+            target_scopes: crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary()),
+            rule,
+            usage: None,
+            flags: Vec::new(),
+            seen_apps: Vec::new(),
+            listening: Vec::new(),
+            reviewed: ReviewState::No,
+            hits_known: true,
+        }
+    }
+
+    /// The write is on a worker now, so a test has to wait for it the way
+    /// the frame loop does. Bounded so a hang fails rather than blocks.
+    fn settle(app: &mut App) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !app.review_pending.is_empty() {
+            app.poll_reviews();
+            if std::time::Instant::now() > deadline {
+                panic!("the reviewed write never reported back");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// A reviewed mark is a security attestation, so it may only appear in
+    /// the UI once it has actually been persisted.
+    ///
+    /// Contract — issue #6: the write's Result was discarded and the row was
+    /// marked regardless, so the mark silently reverted on the next refresh.
+    #[test]
+    fn a_failed_write_leaves_the_row_unmarked_and_says_so() {
+        let db = TempDb::new("toggle-reviewed-busy");
+
+        // The failure mode the issue names: ingest holds one BEGIN IMMEDIATE
+        // across the whole loop, so a second writer cannot get the lock.
+        let ingest = crate::store::Store::open(&db.path()).expect("open ingest connection");
+        ingest.begin().expect("hold the ingest write transaction");
+
+        // Fixture check: the lock really is held. Probed with the busy
+        // timeout disabled, since rusqlite otherwise waits.
+        let probe = rusqlite::Connection::open(db.path()).expect("open probe connection");
+        probe
+            .busy_timeout(std::time::Duration::ZERO)
+            .expect("disable probe busy timeout");
+        assert!(
+            probe.execute_batch("BEGIN IMMEDIATE").is_err(),
+            "fixture must hold the write lock"
+        );
+        drop(probe);
+
+        let mut app = App::base(Some(db.path()));
+        app.rows.push(unreviewed_row("Rule-A"));
+
+        app.toggle_reviewed(0);
+        settle(&mut app);
+
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::No),
+            "a failed write must leave the row unreviewed, but it shows {}",
+            review_label(&app.rows[0].reviewed)
+        );
+        assert!(
+            !app.status.is_empty(),
+            "a failed reviewed write must be surfaced to the user"
+        );
+
+        ingest.rollback().expect("release the ingest transaction");
+    }
+
+    /// The other way persistence fails: the connection is never obtained.
+    #[test]
+    fn a_store_that_cannot_be_opened_leaves_the_row_unmarked() {
+        let db = TempDb::new("toggle-reviewed-open-fails");
+        std::fs::create_dir_all(&db.dir).expect("create scratch dir");
+        // a plain file where the DB's parent directory would have to be
+        let blocker = db.dir.join("not-a-directory");
+        std::fs::write(&blocker, b"occupying the db's parent name").expect("create blocker");
+        let db_path = blocker.join("firebreak.db");
+        assert!(
+            crate::store::Store::open(&db_path).is_err(),
+            "fixture must make Store::open fail"
+        );
+
+        let mut app = App::base(Some(db_path));
+        app.rows.push(unreviewed_row("Rule-A"));
+        app.toggle_reviewed(0);
+        settle(&mut app);
+
+        assert!(matches!(app.rows[0].reviewed, ReviewState::No));
+        assert!(!app.status.is_empty());
+    }
+
+    /// Status reports the latest action, not a log: a retry that persists
+    /// must stop the superseded failure being reported.
+    #[test]
+    fn a_successful_retry_clears_the_old_failure() {
+        let db = TempDb::new("toggle-reviewed-retry");
+        let ingest = crate::store::Store::open(&db.path()).expect("open ingest connection");
+        ingest.begin().expect("hold the write transaction");
+
+        let mut app = App::base(Some(db.path()));
+        app.rows.push(unreviewed_row("Rule-A"));
+        app.toggle_reviewed(0);
+        settle(&mut app);
+        assert!(!app.status.is_empty(), "fixture: the first toggle failed");
+
+        ingest.rollback().expect("release the transaction");
+        app.toggle_reviewed(0);
+        settle(&mut app);
+
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::Yes(_)),
+            "the retry persisted, so the row must now be marked"
+        );
+        assert!(
+            app.status.is_empty(),
+            "a superseded failure must not still be reported: {}",
+            app.status
+        );
+    }
+
+    /// The table can be rebuilt between the click and the write landing —
+    /// the auto-refresh does exactly that. The mark must follow the rule it
+    /// was made against, not whatever row now sits at that index.
+    #[test]
+    fn a_mark_follows_its_rule_when_the_table_is_rebuilt_underneath() {
+        let db = TempDb::new("toggle-reviewed-rebuild");
+        let mut app = App::base(Some(db.path()));
+        app.rows.push(unreviewed_row("Rule-A"));
+
+        app.toggle_reviewed(0);
+        // the refresh lands first, reordering the table
+        app.rows = vec![unreviewed_row("Rule-B"), unreviewed_row("Rule-A")];
+        settle(&mut app);
+
+        assert!(
+            matches!(app.rows[1].reviewed, ReviewState::Yes(_)),
+            "Rule-A was the one attested to"
+        );
+        assert!(
+            matches!(app.rows[0].reviewed, ReviewState::No),
+            "Rule-B must not inherit a mark meant for another rule"
+        );
+    }
 
     /// The repeating refresh replaces every row, so anything the user is
     /// part-way through must hold it off. Each case below is a way real work

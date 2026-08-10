@@ -223,6 +223,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         firstrun_band(app, ctx);
     }
     filter_bar(app, ctx);
+    status_band(app, ctx);
     footer(app, ctx);
     drawer(app, ctx);
     if app.selected.is_some() {
@@ -690,10 +691,10 @@ fn settings_menu(
                 if menu_item(ui, "Restore audit policy", app.db_path.is_some()) {
                     if let Some(db) = app.db_path.clone() {
                         if let Ok(store) = crate::store::Store::open(&db) {
-                            app.status = match crate::pipeline::restore_audit_state(&store) {
-                                Ok(m) => m,
-                                Err(e) => format!("Restore failed: {e:#}"),
-                            };
+                            match crate::pipeline::restore_audit_state(&store) {
+                                Ok(m) => app.report(m, false),
+                                Err(e) => app.report(format!("Restore failed: {e:#}"), true),
+                            }
                         }
                     }
                     app.settings_open = false;
@@ -744,10 +745,13 @@ fn do_export_csv(app: &mut App) {
         .set_title("Export rule usage to CSV")
         .save_file()
     {
-        app.status = match crate::pipeline::export_csv(&app.rows, &path) {
-            Ok(()) => format!("Exported {} rules → {}", app.rows.len(), path.display()),
-            Err(e) => format!("CSV export failed: {e:#}"),
-        };
+        match crate::pipeline::export_csv(&app.rows, &path) {
+            Ok(()) => app.report(
+                format!("Exported {} rules → {}", app.rule_count(), path.display()),
+                false,
+            ),
+            Err(e) => app.report(format!("CSV export failed: {e:#}"), true),
+        }
     }
 }
 
@@ -755,10 +759,13 @@ fn do_export_csv(app: &mut App) {
 fn do_export_csv(app: &mut App) {
     // preview/dev: no dialog — write next to the working dir
     let path = std::path::PathBuf::from(crate::pipeline::default_csv_name());
-    app.status = match crate::pipeline::export_csv(&app.rows, &path) {
-        Ok(()) => format!("Exported {} rules → {}", app.rows.len(), path.display()),
-        Err(e) => format!("CSV export failed: {e:#}"),
-    };
+    match crate::pipeline::export_csv(&app.rows, &path) {
+        Ok(()) => app.report(
+            format!("Exported {} rules → {}", app.rule_count(), path.display()),
+            false,
+        ),
+        Err(e) => app.report(format!("CSV export failed: {e:#}"), true),
+    }
 }
 
 #[cfg(windows)]
@@ -791,7 +798,7 @@ fn do_import_evtx(app: &mut App, ctx: &egui::Context) {
 
 #[cfg(not(windows))]
 fn do_import_evtx(app: &mut App, _ctx: &egui::Context) {
-    app.status = "Import is only available on Windows.".into();
+    app.report("Import is only available on Windows.", true);
 }
 
 #[cfg(windows)]
@@ -808,7 +815,7 @@ fn do_import_bundle(app: &mut App, ctx: &egui::Context) {
 
 #[cfg(not(windows))]
 fn do_import_bundle(app: &mut App, _ctx: &egui::Context) {
-    app.status = "Import is only available on Windows.".into();
+    app.report("Import is only available on Windows.", true);
 }
 
 /// Write the embedded PowerShell collector to disk for use on hosts that
@@ -823,18 +830,25 @@ fn do_save_collect_script(app: &mut App) {
     else {
         return;
     };
-    app.status = match std::fs::write(&path, crate::collect::COLLECT_PS1) {
-        Ok(()) => format!(
-            "Saved collection script to {}. Run it elevated on the target device, then import the .zip it produces.",
-            path.display()
+    match std::fs::write(&path, crate::collect::COLLECT_PS1) {
+        Ok(()) => app.report(
+            format!(
+                "Saved collection script to {}. Run it elevated on the target device, then \
+                 import the .zip it produces.",
+                path.display()
+            ),
+            false,
         ),
-        Err(e) => format!("Couldn't save script: {e}"),
-    };
+        Err(e) => app.report(format!("Couldn't save script: {e}"), true),
+    }
 }
 
 #[cfg(not(windows))]
 fn do_save_collect_script(app: &mut App) {
-    app.status = "Saving the collection script is only available on Windows.".into();
+    app.report(
+        "Saving the collection script is only available on Windows.",
+        true,
+    );
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
@@ -2481,8 +2495,16 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     // it never changes the firewall
     use crate::ui::ReviewState;
     let rv_center = Pos2::new(cols.reviewed.0 + CELL_PAD + 10.0, rect.center().y);
+    // A write in flight: the mark is not the rule's state yet, so the dot
+    // shows it is being saved rather than jumping ahead of the store.
+    let saving = app.review_in_flight(&r.rule.name);
     let rv_tip = if synthetic {
         String::new()
+    } else if saving {
+        ui.painter()
+            .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::ACCENT()));
+        ui.painter().circle_filled(rv_center, 2.5, t::ACCENT());
+        "Saving…".to_string()
     } else {
         match &r.reviewed {
             ReviewState::Yes(at) => {
@@ -2523,7 +2545,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
             }
         }
     };
-    let rv_resp = if synthetic {
+    let rv_resp = if synthetic || saving {
         None
     } else {
         let resp = ui.interact(
@@ -3567,6 +3589,57 @@ fn unattributed_body(app: &App, ui: &mut egui::Ui) {
 }
 
 // ---- footer ----
+
+/// The last action's outcome.
+///
+/// Every failure the app can report — a reviewed mark that would not save, a
+/// failed CSV export, an audit-policy restore that did not take — used to be
+/// written to `app.status` and painted nowhere, so it reached the user only
+/// as silence. This is where it lands.
+fn status_band(app: &mut App, ctx: &egui::Context) {
+    if app.status.is_empty() {
+        return;
+    }
+    let (fill, border, fg) = if app.status_error {
+        (t::FAIL_BG(), t::FAIL_BORDER(), t::DESTRUCTIVE())
+    } else {
+        (t::ACCENT_TINT(), t::ACCENT_TINT_BORDER(), t::INK())
+    };
+    let mut dismiss = false;
+    egui::TopBottomPanel::top("status")
+        .frame(
+            egui::Frame::none()
+                .fill(fill)
+                .inner_margin(egui::Margin::symmetric(PAGE, 7.0)),
+        )
+        .show(ctx, |ui| {
+            super::stroke_bottom(
+                ui.painter(),
+                ui.max_rect().expand2(Vec2::new(PAGE, 7.0)),
+                border,
+            );
+            ui.horizontal_top(|ui| {
+                let label = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&app.status)
+                            .font(t::sans(11.5))
+                            .color(fg),
+                    )
+                    .wrap(),
+                );
+                let _ = label;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if link(ui, "Dismiss", fg).clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+        });
+    if dismiss {
+        app.status.clear();
+        app.status_error = false;
+    }
+}
 
 fn footer(app: &mut App, ctx: &egui::Context) {
     let (dis, en, scope) = app.pending_counts();
