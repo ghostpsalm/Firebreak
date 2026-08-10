@@ -415,6 +415,23 @@ fn header(app: &mut App, ctx: &egui::Context) {
                         app.stop_auditing(ctx);
                     }
                     ui.add_space(12.0);
+                } else if app.ctx_info.events_processed > 0 {
+                    // Stopped, but evidence was collected before that. Saying
+                    // "no usage data has ever been collected" over a real
+                    // total is how someone concludes a busy rule is unused.
+                    stat(
+                        ui,
+                        if cfg!(target_os = "linux") {
+                            "Counting paused"
+                        } else {
+                            "Auditing is off"
+                        },
+                        &format!(
+                            "{} {} collected before it stopped",
+                            t::fmt_thousands(app.ctx_info.events_processed as i64),
+                            measured_noun()
+                        ),
+                    );
                 } else {
                     stat(
                         ui,

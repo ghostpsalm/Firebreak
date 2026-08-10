@@ -679,7 +679,7 @@ impl App {
                 };
                 let _ = tx.send(msg);
             } else {
-                let msg = match backend::rules_only(&progress) {
+                let msg = match backend::rules_only(&db_path, &progress) {
                     Ok(r) => WorkerMsg::NeedsEnable(Box::new(r)),
                     Err(e) => WorkerMsg::Failed(format!("{e:#}")),
                 };

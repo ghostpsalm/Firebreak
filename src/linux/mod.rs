@@ -276,18 +276,36 @@ fn analyze_firewalld_zones(
     // (--enable-only) exactly as enabling audit policy is on Windows.
     if !firewalld::table_exists() {
         let mut report = report;
-        report.note = Some(format!(
-            "Collection is not enabled on this host, so there are no counts yet. Run \
-             `firebreak --enable-only` to install the shadow counter table, leave it to \
-             gather traffic, then run again. {}",
-            firewalld::REBOOT_CAVEAT
-        ));
+        // Not counting *now* is not the same as never having counted. The
+        // totals banked by earlier runs are real evidence and are still
+        // shown; discarding them here reported "0" for rules with hundreds
+        // of packets against them, which is the one direction of error this
+        // tool must never make.
+        let banked: i64 = prior.counters.values().map(|c| c.total()).sum();
+        report.note = Some(if banked > 0 {
+            format!(
+                "Counting is paused: the shadow counter table is not installed, so the totals \
+                 below stopped where they were and no new traffic is being counted. Run \
+                 `firebreak --enable-only` to resume. {}",
+                firewalld::REBOOT_CAVEAT
+            )
+        } else {
+            format!(
+                "Collection is not enabled on this host, so there are no counts yet. Run \
+                 `firebreak --enable-only` to install the shadow counter table, leave it to \
+                 gather traffic, then run again. {}",
+                firewalld::REBOOT_CAVEAT
+            )
+        });
         for rule in &zones.rules {
             let info = rule.to_rule_info();
+            // A rule with a banked total was measured; one with no entry at
+            // all never was, and stays unknown rather than becoming a zero.
+            let hits = prior.counters.get(&rule.id()).map(|c| c.total());
             report.rows.push(RuleUsageRow {
                 listening: crate::listeners::listeners_for_rule(&info, &live_listeners),
                 rule: info,
-                hits: None,
+                hits,
             });
         }
         return Ok((report, prior.clone()));
@@ -549,5 +567,33 @@ mod tests {
         let prior = PriorState::default();
         let changed = prior.generation.as_deref().is_some_and(|g| g != "boot-a:1");
         assert!(!changed);
+    }
+
+    /// Stopping collection does not unmake the evidence. The banked totals
+    /// have to survive into the paused screen, or a rule with hundreds of
+    /// packets against it presents as never used — and "never used" is the
+    /// list people work through deleting things from.
+    #[test]
+    fn pausing_collection_keeps_the_totals_already_counted() {
+        let mut prior = PriorState::default();
+        prior.counters.insert(
+            "firewalld:Z/port/22/tcp".into(),
+            counters::CounterState::default().observe(463, false),
+        );
+        let banked: i64 = prior.counters.values().map(|c| c.total()).sum();
+        assert_eq!(banked, 463);
+
+        // the paused path reports a rule it has a total for, and reports
+        // nothing at all for one it does not — unknown, never zero
+        let hits = prior
+            .counters
+            .get("firewalld:Z/port/22/tcp")
+            .map(|c| c.total());
+        assert_eq!(hits, Some(463));
+        let unknown = prior
+            .counters
+            .get("firewalld:Z/service/ssh/tcp")
+            .map(|c| c.total());
+        assert_eq!(unknown, None, "a rule never counted stays unknown");
     }
 }

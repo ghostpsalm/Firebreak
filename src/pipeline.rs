@@ -604,14 +604,26 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
 /// The rule table without any usage data — for the first-run screen before
 /// auditing is enabled (rules + scope + current listeners are still useful).
 #[cfg(not(target_os = "linux"))]
-pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
+pub fn rules_only(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
     progress("Enumerating firewall rules…");
     let rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
     firewall_rules::save_rules_cache(&rules);
     progress("Enumerating listening sockets…");
     let listeners = listeners::enumerate_listeners().unwrap_or_default();
-    let empty = std::collections::HashMap::new();
-    let mut rows = build_rows(rules, &empty, &listeners, &std::collections::HashMap::new());
+    // Evidence already ingested outlives the audit policy that produced it.
+    // Someone who audited for a fortnight and then turned auditing off is
+    // not back at an empty first run, and showing zeroes there would invite
+    // deleting rules on evidence that says nothing of the sort.
+    let store = Store::open(db_path).ok();
+    let usage = store
+        .as_ref()
+        .and_then(|s| s.all_usage().ok())
+        .unwrap_or_default();
+    let reviewed = store
+        .as_ref()
+        .and_then(|s| s.load_reviewed().ok())
+        .unwrap_or_default();
+    let mut rows = build_rows(rules, &usage, &listeners, &reviewed);
     // The default stance does not depend on evidence, so it is known on the
     // first-run screen too — before any auditing has been enabled.
     let (stance, default_rows) = default_inbound();

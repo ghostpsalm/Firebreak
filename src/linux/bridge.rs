@@ -36,13 +36,23 @@ pub fn quick_cached_result(_db_path: &Path) -> Option<AnalysisResult> {
     None
 }
 
-/// The rule table with no usage data — the first-run screen, before the
-/// user has opted into collection.
-pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
+/// The rule table while collection is off — the first-run screen, and the
+/// screen you get back after stopping.
+///
+/// It still loads the banked counter totals. "Not counting now" and "never
+/// counted anything" are different states, and a run that had collected for
+/// a week before someone stopped it must not present as an empty first run.
+pub fn rules_only(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
     let backend = require_backend()?;
     progress("Reading firewall rules…");
-    let (report, _) = super::analyze(backend, &super::PriorState::default())?;
-    Ok(to_result(backend, report, false, &Default::default()))
+    let prior = crate::store::Store::open(db_path)
+        .and_then(|s| s.load_counter_state())
+        .unwrap_or_default();
+    let (report, _) = super::analyze(backend, &prior)?;
+    let reviewed = crate::store::Store::open(db_path)
+        .and_then(|s| s.load_reviewed())
+        .unwrap_or_default();
+    Ok(to_result(backend, report, false, &reviewed))
 }
 
 /// A full run: read counters, fold them into the running totals, persist.
