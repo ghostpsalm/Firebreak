@@ -112,11 +112,15 @@ fn to_result(
         );
     }
 
-    let rows = report
+    let stance = super::default_policy::read(backend);
+    let mut rows = report
         .rows
         .into_iter()
         .map(|r| row_from(r, reviewed))
         .collect::<Vec<_>>();
+    if let Some(s) = &stance {
+        rows.push(default_policy_row(backend, s));
+    }
     let unmatched = report
         .unmeasurable
         .into_iter()
@@ -138,10 +142,37 @@ fn to_result(
             events_processed: measured.max(0) as u64,
             unmatched_events: unmeasurable,
             note: note.trim().to_string(),
+            default_inbound: stance.map(|s| ui::DefaultInbound {
+                headline: s.verdict.headline().to_string(),
+                socket_note: s.verdict.socket_note().to_string(),
+                detail: s.detail.clone(),
+            }),
         },
         unmatched,
         listeners: super::proc::enumerate_listeners(),
     }
+}
+
+/// The catch-all verdict as a row in the rule table. Shape and guarantees
+/// are the shared ones — see [`crate::default_policy::row`]; what differs
+/// per platform is only what had to be read to know the verdict.
+fn default_policy_row(
+    backend: super::Backend,
+    stance: &super::default_policy::DefaultInbound,
+) -> RuleRow {
+    crate::default_policy::row(
+        stance.verdict,
+        // no Linux backend scopes its catch-all: it is the floor for every
+        // zone at once
+        "Any",
+        &stance.detail,
+        format!(
+            "Inbound traffic matching none of the rules above. Read from {}, not configured \
+             by Firebreak. Traffic on a connection this host started is accepted before this \
+             is reached.",
+            backend.label()
+        ),
+    )
 }
 
 fn row_from(row: super::RuleUsageRow, reviewed: &Reviewed) -> RuleRow {
@@ -187,6 +218,44 @@ mod tests {
 
     fn row_from_test(r: super::super::RuleUsageRow) -> RuleRow {
         row_from(r, &Default::default())
+    }
+
+    fn default_row(verdict: super::super::default_policy::Verdict) -> RuleRow {
+        default_policy_row(
+            super::super::Backend::Firewalld,
+            &super::super::default_policy::DefaultInbound {
+                verdict,
+                detail: "a chain tail".into(),
+            },
+        )
+    }
+
+    /// The catch-all is displayed among the rules but is not one, and every
+    /// path that acts on a rule has to agree — a checkbox, a plan or a
+    /// zero-hit listing on it would each be a way to "disable" the host's
+    /// default deny, which Firebreak cannot do and must not offer.
+    #[test]
+    fn the_default_policy_row_is_never_treated_as_a_rule() {
+        use super::super::default_policy::Verdict;
+        let r = default_row(Verdict::Reject);
+        assert!(r.is_default_policy());
+        assert!(!r.rule.is_editable(), "nothing here can be changed");
+        assert!(
+            !r.hits_known,
+            "counters sit after the verdict and never see rejected traffic, so its \
+             hits are unknown — not zero, which would list it as a disable candidate"
+        );
+        assert_eq!(r.usage.as_ref().map(|u| u.allow_count), None);
+        assert_eq!(r.rule.action, "Reject");
+    }
+
+    /// An open host must read as open. Reporting a deny that is not there
+    /// would tell someone an exposed port is closed.
+    #[test]
+    fn an_accept_default_is_shown_as_allow() {
+        use super::super::default_policy::Verdict;
+        assert_eq!(default_row(Verdict::Accept).rule.action, "Allow");
+        assert_eq!(default_row(Verdict::Drop).rule.action, "Block");
     }
 
     fn row(name: &str, action: &str, hits: Option<i64>) -> super::super::RuleUsageRow {

@@ -90,6 +90,29 @@ thing that lints `src/linux/` at all. Don't drop it.
 CI (`.github/workflows/ci.yml`) runs the same gate on push/PR to `main`,
 installing `mingw-w64` first.
 
+## The default-inbound row
+
+Every rule is an *exception*; the verdict in the gaps between them is what
+decides whether a listening socket with no rule is exposed. `default_policy`
+reads it per platform — firewalld's `filter_INPUT` tail, ufw's
+`DEFAULT_INPUT_POLICY`, an nftables base-chain policy, or Windows'
+per-profile `DefaultInboundAction` — and it appears in three places: the
+evidence header, the socket list (replacing a bare `—`), and a synthetic row
+in the rule table.
+
+- **Never assumed, per host.** Raw nftables is commonly `policy accept`, and
+  a Windows profile with the firewall switched off is open whatever its
+  configured action says. Unreadable is reported as unknown, never as a deny
+  — claiming a deny that is not there tells someone an exposed port is shut.
+- **The synthetic row is not a rule**, and `RuleSource::DefaultPolicy` is
+  what enforces that: no checkbox, no review circle, no scope chips, and
+  excluded from plans, quick actions, the zero-hit list, the CSV export and
+  the rule count. `hits_known` is false — counters sit *after* the firewall's
+  verdict, so refused traffic is counted nowhere, and zero would read as
+  "measured, never matched".
+- **Windows keeps one per profile and they need not agree**, so it emits one
+  row per distinct verdict rather than averaging them into a single claim.
+
 ## Auto-refresh (Linux)
 
 The open window re-reads counters every 5s. A *full* pass costs seconds —

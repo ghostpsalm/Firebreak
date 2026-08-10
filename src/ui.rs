@@ -83,6 +83,11 @@ impl RuleRow {
     fn is_zero_hit(&self) -> bool {
         self.hits_known && self.rule.is_editable() && self.total_hits() == 0
     }
+    /// The synthetic catch-all row, which is not a rule: it must not be
+    /// counted as one, staged, applied, exported or sorted among them.
+    pub(crate) fn is_default_policy(&self) -> bool {
+        self.rule.source() == crate::model::RuleSource::DefaultPolicy
+    }
     fn orig_scopes(&self) -> crate::model::ScopeSet {
         crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
     }
@@ -100,6 +105,21 @@ pub struct AuditContext {
     pub events_processed: u64,
     pub unmatched_events: u64,
     pub note: String,
+    /// What the host does with inbound traffic no rule matched. `None` where
+    /// it was not established — Windows does not fill this in, and a Linux
+    /// backend that could not be read reports unknown rather than a deny.
+    pub default_inbound: Option<DefaultInbound>,
+}
+
+/// The host's catch-all inbound verdict, phrased for each place it appears.
+#[derive(Clone, Default)]
+pub struct DefaultInbound {
+    /// Header wording: "Rejected", "Dropped", "Allowed".
+    pub headline: String,
+    /// Socket-list wording, for a listener no rule matches.
+    pub socket_note: String,
+    /// Where it was read from, for the detail panel.
+    pub detail: String,
 }
 
 // ---- workers ----
@@ -305,7 +325,9 @@ impl App {
         (0..self.rows.len())
             .filter(|&i| {
                 let r = &self.rows[i];
-                if !r.rule.is_enabled() || !(a.matcher)(r) {
+                // staging something Apply can never carry out would show a
+                // count of changes that then silently does nothing
+                if !r.rule.is_editable() || !r.rule.is_enabled() || !(a.matcher)(r) {
                     return false;
                 }
                 match a.effect {
@@ -1151,6 +1173,13 @@ impl App {
         })
     }
 
+    /// How many actual rules there are. The catch-all row is displayed among
+    /// them but is not one of them, and counting it would overstate the rule
+    /// set by one on every host.
+    pub(crate) fn rule_count(&self) -> usize {
+        self.rows.iter().filter(|r| !r.is_default_policy()).count()
+    }
+
     // ---- filtering ----
 
     /// Scope names currently ticked in the filter row. An empty vocabulary
@@ -1222,6 +1251,12 @@ impl App {
             .collect();
         idx.sort_by(|&a, &b| {
             let (ra, rb) = (&self.rows[a], &self.rows[b]);
+            // The catch-all sits under every rule, in every sort and either
+            // direction — it is the floor, not a competitor for the top of
+            // the list.
+            if ra.is_default_policy() != rb.is_default_policy() {
+                return ra.is_default_policy().cmp(&rb.is_default_policy());
+            }
             let ord = match self.sort {
                 Sort::Enabled => ra.rule.is_enabled().cmp(&rb.rule.is_enabled()),
                 Sort::Name => ra

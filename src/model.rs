@@ -60,6 +60,11 @@ pub enum RuleSource {
     /// The Linux firewall manager that owns the rule (ufw / firewalld /
     /// nftables). Editable through that manager, which is what Apply does.
     Platform,
+    /// The chain's catch-all verdict — what happens to inbound traffic that
+    /// matched no rule at all. Not a rule anyone wrote and not one anyone can
+    /// edit; it is shown because a rule list that omits it invites the reader
+    /// to assume the gaps are open when they are usually closed.
+    DefaultPolicy,
     /// A Windows Filtering Platform filter that is *not* a firewall rule —
     /// Defender network protection, a VPN client, third-party security
     /// software. It filters traffic but no firewall rule describes it, so it
@@ -73,10 +78,13 @@ impl RuleInfo {
     pub const SOURCE_TYPE_WFP: &'static str = "WfpFilter";
     /// Synthetic marker for a Linux backend's own rules.
     pub const SOURCE_TYPE_PLATFORM: &'static str = "Platform";
+    /// Synthetic marker for the catch-all verdict row.
+    pub const SOURCE_TYPE_DEFAULT: &'static str = "DefaultPolicy";
 
     pub fn source(&self) -> RuleSource {
         match self.policy_source_type.as_deref().unwrap_or("") {
             t if t.eq_ignore_ascii_case(Self::SOURCE_TYPE_WFP) => RuleSource::WfpFilter,
+            t if t.eq_ignore_ascii_case(Self::SOURCE_TYPE_DEFAULT) => RuleSource::DefaultPolicy,
             t if t.eq_ignore_ascii_case(Self::SOURCE_TYPE_PLATFORM) => RuleSource::Platform,
             t if t.eq_ignore_ascii_case("GroupPolicy") => RuleSource::GroupPolicy,
             t if t.eq_ignore_ascii_case("MDM") => RuleSource::Mdm,
@@ -101,7 +109,10 @@ impl RuleInfo {
     /// something else's enforcement showing through; there is no rule to
     /// edit, so it must never present a checkbox.
     pub fn is_editable(&self) -> bool {
-        self.source() != RuleSource::WfpFilter
+        !matches!(
+            self.source(),
+            RuleSource::WfpFilter | RuleSource::DefaultPolicy
+        )
     }
 
     /// Short label for the Source column.
@@ -111,6 +122,7 @@ impl RuleInfo {
             RuleSource::GroupPolicy => "Group Policy".into(),
             RuleSource::Mdm => "Intune/MDM".into(),
             RuleSource::ServiceHardening => "Service hardening".into(),
+            RuleSource::DefaultPolicy => "Chain default".into(),
             // the owning subsystem is the useful part: "ufw", "firewalld"
             RuleSource::Platform | RuleSource::WfpFilter => self
                 .policy_source
@@ -140,6 +152,17 @@ impl RuleInfo {
                 "A Windows Service Hardening rule that ships with the OS.".into()
             }
             RuleSource::Platform => format!("Managed by {}.", self.source_label()),
+            // `policy_source` carries where this was read from, verbatim, so
+            // the claim can be checked against the host rather than believed.
+            RuleSource::DefaultPolicy => format!(
+                "Not a rule: what inbound traffic meets when no rule matched it. Firebreak \
+                 reads it, never changes it{}",
+                self.policy_source
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" — {s}."))
+                    .unwrap_or_else(|| ".".into())
+            ),
             RuleSource::WfpFilter => format!(
                 "Not a firewall rule: a {} packet filter. It can block or permit traffic that \
                  no firewall rule explains, and Firebreak cannot change it.",

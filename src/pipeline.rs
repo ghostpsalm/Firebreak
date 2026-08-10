@@ -142,6 +142,12 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
         }
     };
     for r in rows {
+        // The catch-all verdict row is not a rule and has no counts. In a
+        // sheet whose Allow/Block columns are numbers, it would export as
+        // zero — which reads as "measured, never matched".
+        if r.is_default_policy() {
+            continue;
+        }
         let (allow, block) = r
             .usage
             .as_ref()
@@ -355,6 +361,9 @@ fn import_events(
             events_processed,
             unmatched_events,
             note,
+            // An imported bundle describes another machine. This host's
+            // default stance says nothing about that one's.
+            default_inbound: None,
         },
         unmatched,
         listeners: listener_list,
@@ -428,6 +437,51 @@ fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
 #[cfg(not(windows))]
 fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
     Vec::new()
+}
+
+/// The host's stance on inbound traffic no rule matched: the fact for the
+/// evidence header, and a synthetic table row per distinct verdict.
+///
+/// Windows keeps this per profile, and the profiles need not agree — a
+/// machine can block on Domain and Private while its Public profile has the
+/// firewall switched off entirely. One row each, carrying the profiles it
+/// applies to, so the table says which network the gap is on.
+#[cfg(windows)]
+fn default_inbound() -> (Option<ui::DefaultInbound>, Vec<ui::RuleRow>) {
+    let Some(stance) = crate::default_policy::read_windows() else {
+        return (None, Vec::new());
+    };
+    let detail = stance.detail();
+    let rows = stance
+        .grouped()
+        .into_iter()
+        .map(|(verdict, profiles)| {
+            let arg = profiles.join(",");
+            crate::default_policy::row(
+                verdict,
+                &arg,
+                &detail,
+                format!(
+                    "Inbound traffic matching none of the rules above, on the {arg} profile(s). \
+                     Read from Windows Firewall, not configured by Firebreak. Traffic on a \
+                     connection this host started is allowed before this is reached."
+                ),
+            )
+        })
+        .collect();
+    (
+        Some(ui::DefaultInbound {
+            headline: stance.headline(),
+            socket_note: stance.socket_note(),
+            detail,
+        }),
+        rows,
+    )
+}
+
+#[cfg(not(windows))]
+fn default_inbound() -> (Option<ui::DefaultInbound>, Vec<ui::RuleRow>) {
+    (None, Vec::new())
 }
 
 /// Build the report rows from rules + aggregated usage + current listeners.
@@ -526,8 +580,10 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
     let all_usage = store.all_usage().ok()?;
     let listener_list = listeners::enumerate_listeners().unwrap_or_default();
     let reviewed = store.load_reviewed().unwrap_or_default();
-    let rows = build_rows(rules, &all_usage, &listener_list, &reviewed);
+    let mut rows = build_rows(rules, &all_usage, &listener_list, &reviewed);
     let unmatched = build_unmatched(&store).unwrap_or_default();
+    let (stance, default_rows) = default_inbound();
+    rows.extend(default_rows);
     Some(AnalysisResult {
         rows,
         ctx: ui::AuditContext {
@@ -538,6 +594,7 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
             events_processed: 0,
             unmatched_events: 0,
             note: "Showing cached rules — refreshing from Windows…".into(),
+            default_inbound: stance,
         },
         unmatched,
         listeners: listener_list,
@@ -554,7 +611,11 @@ pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
     progress("Enumerating listening sockets…");
     let listeners = listeners::enumerate_listeners().unwrap_or_default();
     let empty = std::collections::HashMap::new();
-    let rows = build_rows(rules, &empty, &listeners, &std::collections::HashMap::new());
+    let mut rows = build_rows(rules, &empty, &listeners, &std::collections::HashMap::new());
+    // The default stance does not depend on evidence, so it is known on the
+    // first-run screen too — before any auditing has been enabled.
+    let (stance, default_rows) = default_inbound();
+    rows.extend(default_rows);
     Ok(AnalysisResult {
         rows,
         ctx: ui::AuditContext {
@@ -565,6 +626,7 @@ pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
             events_processed: 0,
             unmatched_events: 0,
             note: String::new(),
+            default_inbound: stance,
         },
         unmatched: Vec::new(),
         listeners,
@@ -712,8 +774,10 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
     }
     let all_usage = store.all_usage()?;
     let reviewed = store.load_reviewed().unwrap_or_default();
-    let rows = build_rows(rules, &all_usage, &listener_list, &reviewed);
+    let mut rows = build_rows(rules, &all_usage, &listener_list, &reviewed);
     let unmatched = build_unmatched(&store)?;
+    let (stance, default_rows) = default_inbound();
+    rows.extend(default_rows);
 
     let ctx = ui::AuditContext {
         hostname: hostname(),
@@ -723,6 +787,7 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
         events_processed,
         unmatched_events,
         note,
+        default_inbound: stance,
     };
 
     Ok(AnalysisResult {

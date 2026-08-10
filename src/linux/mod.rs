@@ -20,6 +20,7 @@
 pub mod apply;
 pub mod bridge;
 pub mod counters;
+pub mod default_policy;
 pub mod firewalld;
 pub mod nftables;
 pub mod proc;

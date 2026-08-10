@@ -375,6 +375,12 @@ pub fn has_ruleset() -> bool {
     read_rules().is_ok_and(|r| !r.is_empty())
 }
 
+/// The live ruleset as nft's own JSON — the base chains in it carry the
+/// policies [`super::default_policy`] reads.
+pub fn ruleset_json() -> Result<Value> {
+    serde_json::from_str(&nft(&["-j", "list", "ruleset"])?).context("parsing nft JSON")
+}
+
 /// Read the live ruleset.
 pub fn read_rules() -> Result<Vec<NftRule>> {
     let json: Value =

@@ -5,6 +5,7 @@ mod audit_control;
 mod baseline_checks;
 mod collect;
 mod console;
+mod default_policy;
 mod elevation;
 mod event_query;
 mod filter_map;
@@ -425,6 +426,17 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     );
     if backend.needs_instrumentation() {
         println!("Collection: opt-in (--enable-only), removable (--restore-audit)");
+    }
+    // The rules below are exceptions; this is the verdict in the gaps
+    // between them, and without it a reader cannot tell whether a port with
+    // no rule is closed or wide open.
+    match linux::default_policy::read(backend) {
+        Some(d) => println!(
+            "Unmatched inbound: {} — {}",
+            d.verdict.headline().to_lowercase(),
+            d.detail
+        ),
+        None => println!("Unmatched inbound: could not be determined on this host"),
     }
 
     let unused = report.unused();

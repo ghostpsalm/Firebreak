@@ -449,6 +449,7 @@ pub fn run() -> Result<()> {
             events_processed: 1_482_306,
             unmatched_events: 1_204,
             note: String::new(),
+            default_inbound: None,
         },
         unmatched,
         mock_listeners,

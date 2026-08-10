@@ -484,6 +484,18 @@ fn header(app: &mut App, ctx: &egui::Context) {
                     }
                 }
 
+                // What the rules do not cover. Stated once, up here, because
+                // the rule table is a list of exceptions and says nothing
+                // about the verdict in the gaps between them.
+                if let Some(d) = &app.ctx_info.default_inbound {
+                    divider(ui);
+                    stat(
+                        ui,
+                        &format!("Unmatched inbound: {}", d.headline.to_lowercase()),
+                        &d.detail,
+                    );
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let settings = settings_button(ui);
                     let just_toggled = settings.clicked();
@@ -1040,7 +1052,7 @@ fn warning_band(app: &mut App, ctx: &egui::Context, hours: f64) {
                 ui.max_rect().expand2(Vec2::new(PAGE, 8.0)),
                 t::ADVISORY_BORDER(),
             );
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 // drawn warning triangle with an exclamation, not a text glyph
                 let (r, _) = ui.allocate_exact_size(Vec2::new(15.0, 15.0), Sense::hover());
                 glyph::warn_sign(ui.painter(), r.center(), 13.0, t::ADVISORY());
@@ -1374,8 +1386,12 @@ fn filter_bar(app: &mut App, ctx: &egui::Context) {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let total = app.rows.len();
-                    let shown = app.visible().len();
+                    let total = app.rule_count();
+                    let shown = app
+                        .visible()
+                        .iter()
+                        .filter(|&&i| !app.rows[i].is_default_policy())
+                        .count();
                     let mut job = egui::text::LayoutJob::default();
                     job.append(&t::fmt_thousands(total as i64), 0.0, fmt(t::semibold(11.5), t::INK()));
                     job.append(" rules · ", 0.0, fmt(t::sans(11.5), t::TERTIARY()));
@@ -1925,19 +1941,28 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         Pos2::new(cols.check + 17.0, rect.center().y),
         Vec2::splat(13.0),
     );
-    draw_checkbox(
-        ui.painter(),
-        cb_rect,
-        saved_on,
-        pending,
-        r.target_enabled,
-        partial,
-    );
-    let cb_resp = ui.interact(
-        cb_rect.expand(3.0),
-        ui.id().with(("cb", ri)),
-        Sense::click(),
-    );
+    // The catch-all row gets no checkbox and no review circle: there is
+    // nothing here to switch off and nothing to attest to. A tickable
+    // control on it would imply Firebreak could turn the host's default
+    // verdict off, which it cannot and must not look able to.
+    let synthetic = r.is_default_policy();
+    let cb_resp = if synthetic {
+        None
+    } else {
+        draw_checkbox(
+            ui.painter(),
+            cb_rect,
+            saved_on,
+            pending,
+            r.target_enabled,
+            partial,
+        );
+        Some(ui.interact(
+            cb_rect.expand(3.0),
+            ui.id().with(("cb", ri)),
+            Sense::click(),
+        ))
+    };
 
     // name (+ flag)
     let name_font = if pending && !dimmed {
@@ -2004,7 +2029,9 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     let orig = r.orig_scopes();
     let mut clicked_scope: Option<String> = None;
     let mut cx = cols.profiles.0 + CELL_PAD;
-    let editable = app.apply.is_none() && app.phase == Phase::Ready;
+    // a scope chip on something Firebreak cannot change is a control that
+    // stages an edit Apply will then silently drop
+    let editable = app.apply.is_none() && app.phase == Phase::Ready && r.rule.is_editable();
     for (slot, (name, present)) in orig.iter().enumerate() {
         if !present {
             continue;
@@ -2218,50 +2245,62 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     // it never changes the firewall
     use crate::ui::ReviewState;
     let rv_center = Pos2::new(cols.reviewed.0 + CELL_PAD + 10.0, rect.center().y);
-    let rv_tip = match &r.reviewed {
-        ReviewState::Yes(at) => {
-            glyph::circle_check(
-                ui.painter(),
-                rv_center,
-                true,
-                t::ENABLE_GREEN(),
-                Color32::WHITE,
-            );
-            format!("Reviewed {at} — click to clear")
-        }
-        ReviewState::Stale(at) => {
-            ui.painter()
-                .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::ADVISORY()));
-            // exclamation: stem + dot
-            ui.painter().line_segment(
-                [
-                    Pos2::new(rv_center.x, rv_center.y - 3.6),
-                    Pos2::new(rv_center.x, rv_center.y + 0.8),
-                ],
-                Stroke::new(1.5_f32, t::ADVISORY()),
-            );
-            ui.painter().circle_filled(
-                Pos2::new(rv_center.x, rv_center.y + 3.4),
-                0.9,
-                t::ADVISORY(),
-            );
-            format!("Was reviewed {at}, but the rule definition has changed since — verify again and click to re-mark")
-        }
-        ReviewState::No => {
-            ui.painter()
-                .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::CB_EMPTY_BORDER()));
-            "Mark this rule as reviewed/verified (does not change the firewall)".to_string()
+    let rv_tip = if synthetic {
+        String::new()
+    } else {
+        match &r.reviewed {
+            ReviewState::Yes(at) => {
+                glyph::circle_check(
+                    ui.painter(),
+                    rv_center,
+                    true,
+                    t::ENABLE_GREEN(),
+                    Color32::WHITE,
+                );
+                format!("Reviewed {at} — click to clear")
+            }
+            ReviewState::Stale(at) => {
+                ui.painter()
+                    .circle_stroke(rv_center, 7.0, Stroke::new(1.3_f32, t::ADVISORY()));
+                // exclamation: stem + dot
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(rv_center.x, rv_center.y - 3.6),
+                        Pos2::new(rv_center.x, rv_center.y + 0.8),
+                    ],
+                    Stroke::new(1.5_f32, t::ADVISORY()),
+                );
+                ui.painter().circle_filled(
+                    Pos2::new(rv_center.x, rv_center.y + 3.4),
+                    0.9,
+                    t::ADVISORY(),
+                );
+                format!("Was reviewed {at}, but the rule definition has changed since — verify again and click to re-mark")
+            }
+            ReviewState::No => {
+                ui.painter().circle_stroke(
+                    rv_center,
+                    7.0,
+                    Stroke::new(1.3_f32, t::CB_EMPTY_BORDER()),
+                );
+                "Mark this rule as reviewed/verified (does not change the firewall)".to_string()
+            }
         }
     };
-    let rv_resp = ui.interact(
-        Rect::from_center_size(rv_center, Vec2::splat(15.0)).expand(4.0),
-        ui.id().with(("rv", ri)),
-        Sense::click(),
-    );
-    if rv_resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    rv_resp.clone().on_hover_text(rv_tip);
+    let rv_resp = if synthetic {
+        None
+    } else {
+        let resp = ui.interact(
+            Rect::from_center_size(rv_center, Vec2::splat(15.0)).expand(4.0),
+            ui.id().with(("rv", ri)),
+            Sense::click(),
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        resp.clone().on_hover_text(rv_tip);
+        Some(resp)
+    };
 
     // tooltip built while the immutable borrow is live, so mutations below
     // don't overlap it
@@ -2278,9 +2317,9 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     // interactions
     if let Some(name) = clicked_scope {
         app.rows[ri].target_scopes.toggle(&name);
-    } else if cb_resp.clicked() && app.apply.is_none() && r.rule.is_editable() {
+    } else if cb_resp.is_some_and(|c| c.clicked()) && app.apply.is_none() && r.rule.is_editable() {
         app.rows[ri].target_enabled = !app.rows[ri].target_enabled;
-    } else if rv_resp.clicked() {
+    } else if rv_resp.is_some_and(|v| v.clicked()) {
         app.toggle_reviewed(ri);
     } else if resp.clicked() {
         app.selected = if selected { None } else { Some(ri) };
@@ -3173,7 +3212,20 @@ fn sockets_body(app: &App, ui: &mut egui::Ui) {
                     None if l.local_address.starts_with("127.") || l.local_address == "::1" => {
                         ("loopback — no rule required".to_string(), t::DISABLED())
                     }
-                    None => ("—".to_string(), t::HAIRLINE_TEXT()),
+                    // "—" left the reader to guess, and the likely guess is
+                    // the wrong one: no rule almost always means unreachable,
+                    // not unprotected. Say which, from what the host reports.
+                    None => match &app.ctx_info.default_inbound {
+                        Some(d) => (
+                            d.socket_note.clone(),
+                            if d.headline == "Allowed" {
+                                t::ADVISORY()
+                            } else {
+                                t::DISABLED()
+                            },
+                        ),
+                        None => ("—".to_string(), t::HAIRLINE_TEXT()),
+                    },
                 };
                 p.text(
                     Pos2::new(rect.left() + PAGE + 520.0, y),

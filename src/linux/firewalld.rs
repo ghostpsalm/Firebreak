@@ -314,6 +314,12 @@ pub fn parse_zone(zone: &str, text: &str, expand: &dyn Fn(&str) -> Vec<(String, 
 /// at the next tick.
 static LAST_ZONES: std::sync::Mutex<Option<Zones>> = std::sync::Mutex::new(None);
 
+/// firewalld's inbound base chain, verbatim. Its tail is the verdict for
+/// traffic no rule matched — see [`super::default_policy`].
+pub fn input_chain_text() -> Result<String> {
+    nft(&["list", "chain", "inet", "firewalld", "filter_INPUT"])
+}
+
 /// The cached vocabulary, if a full read has happened in this process.
 pub fn cached_zones() -> Option<Zones> {
     LAST_ZONES.lock().ok().and_then(|z| z.clone())
