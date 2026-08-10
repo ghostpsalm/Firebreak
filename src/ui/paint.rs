@@ -233,6 +233,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         confirm_modal(app, ctx);
     }
     about_box(app, ctx);
+    update_box(app, ctx);
     // 1px window border on a foreground layer (we draw our own chrome)
     let screen = ctx.screen_rect();
     ctx.layer_painter(egui::LayerId::new(
@@ -703,7 +704,7 @@ fn settings_menu(
                 }
                 ui.separator();
                 if menu_item(ui, "Check for updates…", true) {
-                    app.about_open = true;
+                    app.update_open = true;
                     app.settings_open = false;
                     app.spawn_update_check(ctx.clone());
                 }
@@ -859,11 +860,9 @@ fn menu_item(ui: &mut egui::Ui, label: &str, enabled: bool) -> bool {
     enabled && resp.clicked()
 }
 
-fn about_box(app: &mut App, ctx: &egui::Context) {
-    if !app.about_open {
-        return;
-    }
-    egui::Area::new(egui::Id::new("about_scrim"))
+/// The dimmed backdrop behind a modal dialog.
+fn scrim(ctx: &egui::Context, id: &str) {
+    egui::Area::new(egui::Id::new(id))
         .order(egui::Order::Background)
         .show(ctx, |ui| {
             ui.painter().rect_filled(
@@ -872,8 +871,12 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
                 Color32::from_rgba_unmultiplied(28, 28, 30, 90),
             );
         });
-    let mut open = true;
-    egui::Window::new("about")
+}
+
+/// One dialog shape, so About and Updates are the same object in two
+/// states rather than two windows that drifted apart.
+fn dialog_window(ctx: &egui::Context, id: &str, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Window::new(id)
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
@@ -884,145 +887,337 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
                 .fill(t::TABLE_BG())
                 .stroke(Stroke::new(1.0_f32, t::CONTROL_BORDER())),
         )
-        .show(ctx, |ui| {
-            ui.add_space(18.0);
-            let logo = app.logo_texture(ctx);
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                let (r, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
-                ui.painter().image(
-                    logo.id(),
-                    r,
-                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
+        .show(ctx, |ui| body(ui));
+}
+
+/// A row at the dialogs' shared left margin.
+fn indented(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.add_space(20.0);
+        body(ui);
+    });
+}
+
+fn about_box(app: &mut App, ctx: &egui::Context) {
+    if !app.about_open {
+        return;
+    }
+    scrim(ctx, "about_scrim");
+    let mut open = true;
+    let mut open_updates = false;
+    dialog_window(ctx, "about", |ui| {
+        ui.add_space(18.0);
+        let logo = app.logo_texture(ctx);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
+            ui.painter().image(
+                logo.id(),
+                r,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("Firebreak")
+                        .font(t::semibold(15.0))
+                        .color(t::INK()),
                 );
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("Firebreak")
-                            .font(t::semibold(15.0))
-                            .color(t::INK()),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Version {}",
-                            crate::pipeline::version_string()
-                        ))
+                ui.label(
+                    egui::RichText::new(format!("Version {}", crate::pipeline::version_string()))
                         .font(t::mono(11.0))
                         .color(t::SECONDARY()),
-                    );
-                });
-            });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                ui.label(
-                    egui::RichText::new("Observe first. Enforce with confidence.")
-                        .font(t::semibold(11.5))
-                        .color(t::ACCENT()),
                 );
             });
-            ui.add_space(2.0);
-            for line in [
-                "Turn real network activity into least-privilege firewall policy.",
-                "Correlates WFP connection audit events (5156/5157) with firewall",
-                "rules to find unused and over-broad rules.",
-            ] {
-                ui.horizontal(|ui| {
-                    ui.add_space(20.0);
-                    ui.label(
-                        egui::RichText::new(line)
-                            .font(t::sans(11.5))
-                            .color(t::SECONDARY()),
-                    );
-                });
-            }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                ui.label(
-                    egui::RichText::new(format!("Host: {}", app.ctx_info.hostname))
-                        .font(t::mono(11.0))
-                        .color(t::TERTIARY()),
-                );
-            });
-            ui.add_space(16.0);
-            about_updates(app, ui, ctx);
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(20.0);
-                    if primary_button(ui, "Close", t::ACCENT()).clicked() {
-                        open = false;
-                    }
-                });
-            });
-            ui.add_space(16.0);
         });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.label(
+                egui::RichText::new("Observe first. Enforce with confidence.")
+                    .font(t::semibold(11.5))
+                    .color(t::ACCENT()),
+            );
+        });
+        ui.add_space(2.0);
+        for line in [
+            "Turn real network activity into least-privilege firewall policy.",
+            "Correlates WFP connection audit events (5156/5157) with firewall",
+            "rules to find unused and over-broad rules.",
+        ] {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new(line)
+                        .font(t::sans(11.5))
+                        .color(t::SECONDARY()),
+                );
+            });
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.label(
+                egui::RichText::new(format!("Host: {}", app.ctx_info.hostname))
+                    .font(t::mono(11.0))
+                    .color(t::TERTIARY()),
+            );
+        });
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            if link(ui, "Check for updates…", t::ACCENT()).clicked() {
+                open_updates = true;
+            }
+        });
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(20.0);
+                if primary_button(ui, "Close", t::ACCENT()).clicked() {
+                    open = false;
+                }
+            });
+        });
+        ui.add_space(16.0);
+    });
     if !open {
         app.about_open = false;
     }
+    // one dialog at a time: About steps aside for the one it opened
+    if open_updates {
+        app.about_open = false;
+        app.update_open = true;
+        app.spawn_update_check(ctx.clone());
+    }
 }
 
-/// The "Updates" section inside the About box: a one-line status and, when
-/// there's something to do, a single primary button.
-fn about_updates(app: &mut App, ui: &mut egui::Ui, ctx: &egui::Context) {
+/// The Updates dialog.
+///
+/// Its own window rather than a strip inside About, because an update is a
+/// task with a course to run — check, download, verify, install, restart —
+/// and each of those states has something to say. About tells you what this
+/// build *is*; this tells you what is happening to it.
+fn update_box(app: &mut App, ctx: &egui::Context) {
     use crate::ui::UpdateState;
+    if !app.update_open {
+        return;
+    }
+    scrim(ctx, "update_scrim");
+
+    // What the current state offers to do. Snapshot it and drop the lock
+    // before touching `app`, which the actions need mutably.
     enum Act {
-        None,
         Check,
         Download,
         Restart(std::path::PathBuf),
     }
-    // snapshot the shared state, then release the lock before touching `app`
-    let (line, color, act, btn): (String, Color32, Act, Option<&str>) = {
+    struct View {
+        heading: String,
+        detail: String,
+        detail_color: Color32,
+        /// download completion, when a download is in flight
+        progress: Option<(Option<f32>, String)>,
+        button: Option<(&'static str, Act)>,
+    }
+
+    let current = crate::pipeline::version_string();
+    let view: View = {
         let st = app.update.lock().unwrap();
         match &*st {
-            UpdateState::Idle => ("Check whether a newer build is available.".into(), t::SECONDARY(), Act::Check, Some("Check now")),
-            UpdateState::Checking => ("Checking for updates…".into(), t::SECONDARY(), Act::None, None),
-            UpdateState::UpToDate(v) => (format!("You're on the latest version ({v})."), t::SECONDARY(), Act::None, None),
-            UpdateState::Available(rel) if crate::update::signing_configured() => (format!("Version {} is available (you have {}).", rel.latest, rel.current), t::INK(), Act::Download, Some("Download & install")),
-            // a newer build exists but this build can't verify a signed
-            // download, so in-app install is withheld (fail closed)
-            UpdateState::Available(rel) => (format!("Version {} is available (you have {}). Download it from the Releases page — in-app update is disabled in this build.", rel.latest, rel.current), t::ADVISORY_TEXT(), Act::None, None),
-            UpdateState::Downloading => ("Downloading update…".into(), t::SECONDARY(), Act::None, None),
-            UpdateState::Ready(exe) => ("Update installed — restart to finish.".into(), t::INK(), Act::Restart(exe.clone()), Some("Restart now")),
-            UpdateState::Error(e) => (e.clone(), t::DESTRUCTIVE(), Act::Check, Some("Try again")),
+            UpdateState::Idle => View {
+                heading: format!("Version {current}"),
+                detail: "Firebreak checks only when you ask it to. Nothing is sent but the                          request for the latest release number."
+                    .into(),
+                detail_color: t::SECONDARY(),
+                progress: None,
+                button: Some(("Check now", Act::Check)),
+            },
+            UpdateState::Checking => View {
+                heading: "Checking for updates…".into(),
+                detail: format!("Asking GitHub for the newest release. You have {current}."),
+                detail_color: t::SECONDARY(),
+                progress: None,
+                button: None,
+            },
+            UpdateState::UpToDate(v) => View {
+                heading: "Up to date".into(),
+                detail: format!("Version {v} is the newest release."),
+                detail_color: t::SECONDARY(),
+                progress: None,
+                button: Some(("Check again", Act::Check)),
+            },
+            UpdateState::Available(rel) if crate::update::signing_configured() => View {
+                heading: format!("Version {} is available", rel.latest),
+                detail: format!(
+                    "You have {}. The download is checked against Firebreak's pinned signing                      key before anything is installed, and refused if it does not verify.",
+                    rel.current
+                ),
+                detail_color: t::INK(),
+                progress: None,
+                button: Some(("Download & install", Act::Download)),
+            },
+            // A newer build exists but this one carries no key to check it
+            // with. Refusing to install is the point, so the dialog says so
+            // rather than offering a button that cannot fail closed.
+            UpdateState::Available(rel) => View {
+                heading: format!("Version {} is available", rel.latest),
+                detail: format!(
+                    "You have {}. In-app update is disabled in this build because it has no                      signing key pinned to verify the download — get it from the Releases                      page instead.",
+                    rel.current
+                ),
+                detail_color: t::ADVISORY_TEXT(),
+                progress: None,
+                button: None,
+            },
+            UpdateState::Downloading(p) => View {
+                heading: "Downloading…".into(),
+                detail: "Verification runs on the finished file; nothing is installed until it                          checks out."
+                    .into(),
+                detail_color: t::SECONDARY(),
+                progress: Some((p.fraction(), transferred(*p))),
+                button: None,
+            },
+            UpdateState::Ready(exe) => View {
+                heading: "Installed — restart to finish".into(),
+                detail: "The signature verified and the new build is in place. The previous                          one is kept alongside it until the next start."
+                    .into(),
+                detail_color: t::INK(),
+                progress: None,
+                button: Some(("Restart now", Act::Restart(exe.clone()))),
+            },
+            UpdateState::Error(e) => View {
+                heading: "Update failed".into(),
+                detail: e.clone(),
+                detail_color: t::DESTRUCTIVE(),
+                progress: None,
+                button: Some(("Try again", Act::Check)),
+            },
         }
     };
 
-    ui.horizontal(|ui| {
-        ui.add_space(20.0);
-        ui.label(
-            egui::RichText::new("UPDATES")
-                .font(t::semibold(9.5))
-                .color(t::TERTIARY()),
-        );
-    });
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(20.0);
-        ui.set_max_width(300.0);
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.label(egui::RichText::new(&line).font(t::sans(11.5)).color(color));
-    });
-    if let Some(label) = btn {
-        ui.add_space(8.0);
+    let mut close = false;
+    let mut act: Option<Act> = None;
+    dialog_window(ctx, "update", |ui| {
+        ui.add_space(18.0);
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new("UPDATES")
+                    .font(t::semibold(9.5))
+                    .color(t::TERTIARY()),
+            );
+        });
+        ui.add_space(6.0);
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new(&view.heading)
+                    .font(t::semibold(14.0))
+                    .color(t::INK()),
+            );
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(20.0);
+            ui.set_max_width(300.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(
+                egui::RichText::new(&view.detail)
+                    .font(t::sans(11.5))
+                    .color(view.detail_color),
+            );
+        });
+
+        if let Some((fraction, label)) = &view.progress {
+            ui.add_space(12.0);
+            indented(ui, |ui| {
+                progress_bar(ui, *fraction, 300.0);
+            });
+            ui.add_space(5.0);
+            indented(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .font(t::mono(10.5))
+                        .color(t::TERTIARY()),
+                );
+            });
+        }
+
+        ui.add_space(16.0);
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("Source: github.com/{}", crate::update::REPO))
+                    .font(t::mono(10.0))
+                    .color(t::TERTIARY()),
+            );
+        });
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.add_space(20.0);
-            if primary_button(ui, label, t::ACCENT()).clicked() {
-                match act {
-                    Act::Check => app.spawn_update_check(ctx.clone()),
-                    Act::Download => app.spawn_update_download(ctx.clone()),
-                    Act::Restart(exe) => crate::update::restart(&exe),
-                    Act::None => {}
+            if let Some((label, a)) = view.button {
+                if primary_button(ui, label, t::ACCENT()).clicked() {
+                    act = Some(a);
                 }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(20.0);
+                if flat_button(ui, "Close").clicked() {
+                    close = true;
+                }
+            });
         });
+        ui.add_space(16.0);
+    });
+
+    match act {
+        Some(Act::Check) => app.spawn_update_check(ctx.clone()),
+        Some(Act::Download) => app.spawn_update_download(ctx.clone()),
+        Some(Act::Restart(exe)) => crate::update::restart(&exe),
+        None => {}
+    }
+    if close {
+        app.update_open = false;
     }
 }
 
-/// Small square icon button toggling light/dark. Shows the mode it switches *to*.
+/// "1.4 of 11.4 MB" — or just what has arrived, when the server never said
+/// how much there would be.
+fn transferred(p: crate::update::Progress) -> String {
+    let mb = |b: u64| format!("{:.1} MB", b as f64 / (1024.0 * 1024.0));
+    match p.total {
+        Some(total) => format!("{} of {}", mb(p.received), mb(total)),
+        None => format!("{} downloaded", mb(p.received)),
+    }
+}
+
+/// A determinate bar, or a sliding one where the total is unknown — never a
+/// full bar standing in for "we don't know".
+fn progress_bar(ui: &mut egui::Ui, fraction: Option<f32>, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 6.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t::RAISED());
+    ui.painter()
+        .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, t::CONTROL_BORDER()));
+    match fraction {
+        Some(f) => {
+            let mut fill = rect;
+            fill.set_width(rect.width() * f);
+            ui.painter().rect_filled(fill, 0.0, t::ACCENT());
+        }
+        None => {
+            // indeterminate: a short block sweeping the track
+            let t = ui.input(|i| i.time) as f32;
+            let span = rect.width() * 0.25;
+            let x = rect.left() + (rect.width() - span) * (0.5 - 0.5 * (t * 2.0).cos());
+            let mut fill = rect;
+            fill.set_left(x);
+            fill.set_width(span);
+            ui.painter().rect_filled(fill, 0.0, t::ACCENT());
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// Small square icon button toggling light/dark./// Small square icon button toggling light/dark. Shows the mode it switches *to*.
 fn theme_toggle(ui: &mut egui::Ui, dark: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), Sense::click());
     let (fill, border) = if resp.hovered() {
@@ -3875,4 +4070,30 @@ fn pad20(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         });
         ui.add_space(20.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The byte counter under the progress bar. "of" only appears when there
+    /// is a total to be part of.
+    #[test]
+    fn transferred_states_a_total_only_when_there_is_one() {
+        let mb = 1024 * 1024;
+        assert_eq!(
+            transferred(crate::update::Progress {
+                received: 3 * mb / 2,
+                total: Some(12 * mb),
+            }),
+            "1.5 MB of 12.0 MB"
+        );
+        assert_eq!(
+            transferred(crate::update::Progress {
+                received: mb,
+                total: None,
+            }),
+            "1.0 MB downloaded"
+        );
+    }
 }

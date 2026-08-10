@@ -141,13 +141,16 @@ enum WorkerMsg {
     Failed(String),
 }
 
-/// Where the self-update flow is, shown in the About box.
+/// Where the self-update flow is, shown in the Updates dialog.
 pub(crate) enum UpdateState {
     Idle,
     Checking,
     UpToDate(String),
     Available(crate::update::Release),
-    Downloading,
+    /// Downloading, with however much of it has arrived. A transfer whose
+    /// size the server never declared reports bytes and no fraction, rather
+    /// than a bar that guesses.
+    Downloading(crate::update::Progress),
     Ready(std::path::PathBuf),
     Error(String),
 }
@@ -485,6 +488,9 @@ pub struct App {
     drawer_height: f32,
     settings_open: bool,
     about_open: bool,
+    /// The Updates dialog. Its own window, not a section of About — see
+    /// `paint::update_box`.
+    update_open: bool,
     pub(crate) dark_mode: bool,
     pub(crate) update: std::sync::Arc<std::sync::Mutex<UpdateState>>,
     /// lazily-loaded app logo for the title bar
@@ -564,6 +570,7 @@ impl App {
             drawer_height: 190.0,
             settings_open: false,
             about_open: false,
+            update_open: false,
             dark_mode: false,
             update: std::sync::Arc::new(std::sync::Mutex::new(UpdateState::Idle)),
             logo: None,
@@ -739,12 +746,32 @@ impl App {
 
     /// Download and stage the newest build on a worker thread.
     pub(crate) fn spawn_update_download(&mut self, egui_ctx: egui::Context) {
-        *self.update.lock().unwrap() = UpdateState::Downloading;
+        *self.update.lock().unwrap() = UpdateState::Downloading(Default::default());
         let slot = self.update.clone();
         std::thread::spawn(move || {
-            let next = match crate::update::download_and_install() {
-                Ok(exe) => UpdateState::Ready(exe),
-                Err(e) => UpdateState::Error(format!("{e:#}")),
+            let next = {
+                let slot = slot.clone();
+                let ctx = egui_ctx.clone();
+                // Report straight into the shared state. Repainting on every
+                // chunk would spin the UI thread for no visible gain, so ask
+                // for a frame at most ~20 times a second.
+                let last = std::sync::Mutex::new(std::time::Instant::now());
+                let sink = move |p: crate::update::Progress| {
+                    if let Ok(mut st) = slot.lock() {
+                        if matches!(*st, UpdateState::Downloading(_)) {
+                            *st = UpdateState::Downloading(p);
+                        }
+                    }
+                    let mut last = last.lock().unwrap();
+                    if last.elapsed() >= std::time::Duration::from_millis(50) {
+                        *last = std::time::Instant::now();
+                        ctx.request_repaint();
+                    }
+                };
+                match crate::update::download_and_install_with(&sink) {
+                    Ok(exe) => UpdateState::Ready(exe),
+                    Err(e) => UpdateState::Error(format!("{e:#}")),
+                }
             };
             *slot.lock().unwrap() = next;
             egui_ctx.request_repaint();

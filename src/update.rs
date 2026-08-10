@@ -140,6 +140,29 @@ fn latest_tag_subprocess(api: &str) -> Result<String> {
 /// written into place and later run elevated — an unverifiable or
 /// signature-mismatched artifact is refused (fail closed).
 pub fn download_and_install() -> Result<PathBuf> {
+    download_and_install_with(&|_| {})
+}
+
+/// What a download has moved so far. `total` is `None` when the server did
+/// not say — the dialog then shows bytes rather than inventing a percentage.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Progress {
+    pub received: u64,
+    pub total: Option<u64>,
+}
+
+impl Progress {
+    /// Fraction complete, if that is knowable. Clamped, because a server
+    /// that under-reports its own content length must not drive a bar past
+    /// its end.
+    pub fn fraction(self) -> Option<f32> {
+        let total = self.total.filter(|t| *t > 0)?;
+        Some((self.received as f32 / total as f32).clamp(0.0, 1.0))
+    }
+}
+
+/// As [`download_and_install`], reporting download progress as it goes.
+pub fn download_and_install_with(progress: &(dyn Fn(Progress) + Sync)) -> Result<PathBuf> {
     let exe = std::env::current_exe().context("locating the running exe")?;
     let dir = exe
         .parent()
@@ -147,7 +170,7 @@ pub fn download_and_install() -> Result<PathBuf> {
     let new = dir.join(format!("{ASSET}.new"));
     let old = dir.join(format!("{ASSET}.old"));
 
-    let bytes = fetch(&download_url()).context("downloading the update")?;
+    let bytes = fetch_with_progress(&download_url(), progress).context("downloading the update")?;
     if bytes.len() < 1024 {
         return Err(anyhow!(
             "the downloaded file looks incomplete ({} bytes)",
@@ -257,10 +280,21 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
 /// cannot downgrade the transport.
 #[cfg(not(windows))]
 fn fetch(url: &str) -> Result<Vec<u8>> {
+    fetch_to(url, &fetch_dest())
+}
+
+/// Where curl streams a download. One path per process, so the progress
+/// watcher and the fetch itself are looking at the same file.
+#[cfg(not(windows))]
+fn fetch_dest() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()))
+}
+
+#[cfg(not(windows))]
+fn fetch_to(url: &str, dest: &Path) -> Result<Vec<u8>> {
     let curl = crate::syspath::system_tool("curl")
         .ok_or_else(|| anyhow!("curl is not installed, so Firebreak cannot download an update"))?;
-    let dest = std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
-    let _ = std::fs::remove_file(&dest);
+    let _ = std::fs::remove_file(dest);
     let out = crate::syspath::command(curl)
         .args([
             "--fail",
@@ -286,15 +320,116 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
         .output()
         .context("running curl")?;
     if !out.status.success() {
-        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(dest);
         return Err(anyhow!(
             "download failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    let bytes = std::fs::read(&dest).with_context(|| format!("reading {}", dest.display()))?;
-    let _ = std::fs::remove_file(&dest);
+    let bytes = std::fs::read(dest).with_context(|| format!("reading {}", dest.display()))?;
+    let _ = std::fs::remove_file(dest);
     Ok(bytes)
+}
+
+/// Download with progress.
+///
+/// On Linux curl streams to a file, so progress is the file's size as it
+/// grows — watched from a second thread while curl runs. The total comes
+/// from a HEAD request first; if that fails the download still proceeds and
+/// the dialog shows bytes instead of a percentage. Nothing about the
+/// transfer changes: this only watches it.
+#[cfg(not(windows))]
+fn fetch_with_progress(url: &str, progress: &(dyn Fn(Progress) + Sync)) -> Result<Vec<u8>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let total = content_length(url);
+    progress(Progress { received: 0, total });
+
+    let dest = fetch_dest();
+    let done = Arc::new(AtomicBool::new(false));
+    std::thread::scope(|scope| {
+        let watcher_done = done.clone();
+        let watch = dest.clone();
+        scope.spawn(move || {
+            while !watcher_done.load(Ordering::Relaxed) {
+                if let Ok(md) = std::fs::metadata(&watch) {
+                    progress(Progress {
+                        received: md.len(),
+                        total,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        });
+        let out = fetch_to(url, &dest);
+        done.store(true, Ordering::Relaxed);
+        out
+    })
+    .inspect(|bytes| {
+        // land the bar on 100% rather than wherever the last poll caught it
+        progress(Progress {
+            received: bytes.len() as u64,
+            total: total.or(Some(bytes.len() as u64)),
+        });
+    })
+}
+
+/// The asset's size, so the bar has an end. Best effort — a HEAD that fails
+/// costs the percentage, not the download.
+#[cfg(not(windows))]
+fn content_length(url: &str) -> Option<u64> {
+    let curl = crate::syspath::system_tool("curl")?;
+    let out = crate::syspath::command(curl)
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--head",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "--max-time",
+            "30",
+            "--user-agent",
+            "firebreak",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{size_download}\n%{header_json}",
+            url,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(text.split_once('\n')?.1).ok()?;
+    json.get("content-length")?
+        .as_array()?
+        .first()?
+        .as_str()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+#[cfg(windows)]
+fn fetch_with_progress(url: &str, progress: &(dyn Fn(Progress) + Sync)) -> Result<Vec<u8>> {
+    // WinHTTP reads in chunks, so bytes-so-far is free; the total is the
+    // Content-Length header when the server sends one.
+    match crate::winhttp::get_with_progress(url, "", &|received, total| {
+        progress(Progress { received, total })
+    }) {
+        Ok(bytes) => Ok(bytes),
+        // the PowerShell fallback writes the file in one call and reports
+        // nothing on the way — the dialog stays on "Downloading…"
+        Err(_) => fetch(url),
+    }
 }
 
 /// Relaunch the freshly installed exe and exit this process.
@@ -342,6 +477,28 @@ fn is_newer(latest: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A progress bar that fills before the file arrives, or fills at all on
+    /// a transfer whose size nobody stated, is worse than no bar: it says
+    /// "done" while the download is still running.
+    #[test]
+    fn a_bar_is_only_drawn_when_the_size_is_actually_known() {
+        let p = |received, total| Progress { received, total };
+        assert_eq!(p(0, Some(100)).fraction(), Some(0.0));
+        assert_eq!(p(50, Some(100)).fraction(), Some(0.5));
+        assert_eq!(p(100, Some(100)).fraction(), Some(1.0));
+        assert_eq!(p(10, None).fraction(), None, "unknown total, no fraction");
+        assert_eq!(
+            p(10, Some(0)).fraction(),
+            None,
+            "a zero total is not a size"
+        );
+        assert_eq!(
+            p(150, Some(100)).fraction(),
+            Some(1.0),
+            "a server under-reporting its own length must not push the bar past its end"
+        );
+    }
 
     #[test]
     fn strips_v_prefix() {

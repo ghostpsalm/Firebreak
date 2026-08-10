@@ -10,6 +10,18 @@ use anyhow::{anyhow, bail, Result};
 /// separated (no trailing CRLF), e.g. "Accept: application/vnd.github+json".
 #[cfg(windows)]
 pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
+    get_with_progress(url, extra_headers, &|_, _| {})
+}
+
+/// As [`get`], calling `progress(received, total)` after each chunk. `total`
+/// is the `Content-Length` header when the server sends one — absent on a
+/// chunked response, where the caller shows bytes rather than a percentage.
+#[cfg(windows)]
+pub fn get_with_progress(
+    url: &str,
+    extra_headers: &str,
+    progress: &dyn Fn(u64, Option<u64>),
+) -> Result<Vec<u8>> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
@@ -90,6 +102,9 @@ pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
             )
         })?;
 
+        let total = content_length(request);
+        progress(0, total);
+
         let mut body = Vec::new();
         loop {
             let mut avail = 0u32;
@@ -114,12 +129,36 @@ pub fn get(url: &str, extra_headers: &str) -> Result<Vec<u8>> {
             )?;
             chunk.truncate(read as usize);
             body.extend_from_slice(&chunk);
+            progress(body.len() as u64, total);
             if read == 0 {
                 break;
             }
         }
         Ok(body)
     }
+}
+
+/// The response's `Content-Length`, if it declared one. Best effort: a
+/// missing or unparseable header costs the progress bar its end, nothing
+/// more, so every failure path here returns `None` rather than erroring.
+#[cfg(windows)]
+unsafe fn content_length(request: *mut core::ffi::c_void) -> Option<u64> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Networking::WinHttp::{WinHttpQueryHeaders, WINHTTP_QUERY_CONTENT_LENGTH};
+
+    let mut buf = [0u16; 32];
+    let mut len = (buf.len() * 2) as u32;
+    WinHttpQueryHeaders(
+        request,
+        WINHTTP_QUERY_CONTENT_LENGTH,
+        PCWSTR::null(),
+        Some(buf.as_mut_ptr() as *mut _),
+        &mut len,
+        std::ptr::null_mut(),
+    )
+    .ok()?;
+    let chars = (len as usize / 2).min(buf.len());
+    String::from_utf16_lossy(&buf[..chars]).trim().parse().ok()
 }
 
 /// "https://host/a/b?c" → ("host", "/a/b?c"). Https only.
