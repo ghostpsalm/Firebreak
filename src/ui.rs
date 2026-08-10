@@ -1358,23 +1358,15 @@ pub(crate) fn profile_chip(tag: &str) -> (String, Color32, Color32, Color32) {
         "Private" => owned(t::CHIP_PRV()),
         "Public" => owned(t::CHIP_PUB()),
         "Any" => owned(t::CHIP_ANY()),
+        // A zone name is the user's own word for something, so it is shown
+        // as they wrote it: uppercasing and clipping it produced chips like
+        // "FEDORAWOR…", which names nothing. The chip grows to fit and the
+        // column clips at its own edge like every other cell.
         zone => {
             let (_, fg, bg, border) = t::CHIP_ANY();
-            (abbreviate_scope(zone), fg, bg, border)
+            (zone.to_string(), fg, bg, border)
         }
     }
-}
-
-/// Zone names are user-chosen and can be long; the chip is small. Keep it
-/// recognisable rather than complete — the full name is in the rule's own
-/// display name and in the scope filter row.
-fn abbreviate_scope(zone: &str) -> String {
-    const MAX: usize = 10;
-    let upper: String = zone.to_uppercase();
-    if upper.chars().count() <= MAX {
-        return upper;
-    }
-    upper.chars().take(MAX - 1).collect::<String>() + "\u{2026}"
 }
 
 pub(crate) use helpers::*;
@@ -1410,10 +1402,14 @@ mod helpers {
 
     /// Clickable profile chip. `kept` = still in the rule's target scope;
     /// when false the chip is faded and struck through (pending removal).
+    /// `clip` is the cell the chip belongs to: a zone chip carries the zone's
+    /// full name and so has no fixed width, and must not paint or take clicks
+    /// over the column beside it.
     /// Returns (width, click response if editable).
     pub fn interactive_chip(
         ui: &mut egui::Ui,
         top_left: egui::Pos2,
+        clip: Rect,
         tag: &str,
         kept: bool,
         editable: bool,
@@ -1430,36 +1426,35 @@ mod helpers {
                 t::HAIRLINE_TEXT(),
             )
         };
-        let galley = ui
-            .painter()
-            .layout_no_wrap(short.to_string(), font.clone(), fg);
+        let painter = ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()));
+        let galley = painter.layout_no_wrap(short.to_string(), font.clone(), fg);
         let w = galley.size().x + 10.0;
         let h = 15.0;
         let r = Rect::from_min_size(top_left, Vec2::new(w, h));
-        ui.painter().rect(r, 0.0, bg, Stroke::new(1.0_f32, border));
-        ui.painter().galley(
+        painter.rect(r, 0.0, bg, Stroke::new(1.0_f32, border));
+        painter.galley(
             egui::pos2(r.left() + 5.0, r.center().y - galley.size().y / 2.0),
             galley,
             fg,
         );
         if !kept {
             // strike-through
-            ui.painter().hline(
+            painter.hline(
                 r.left() + 3.0..=r.right() - 3.0,
                 r.center().y,
                 Stroke::new(1.0_f32, t::DISABLED()),
             );
         }
-        let resp = if editable {
+        let hit = r.intersect(clip);
+        let resp = if editable && hit.width() > 0.0 {
             let re = ui.interact(
-                r,
+                hit,
                 ui.id().with(("prof", id_src.0, id_src.1)),
                 egui::Sense::click(),
             );
             if re.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                ui.painter()
-                    .rect_stroke(r, 0.0, Stroke::new(1.0_f32, t::ACCENT()));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, t::ACCENT()));
             }
             Some(re)
         } else {

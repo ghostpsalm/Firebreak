@@ -2012,6 +2012,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         let (w, resp) = interactive_chip(
             ui,
             Pos2::new(cx, rect.center().y - 7.5),
+            col_rect(cols.profiles, rect),
             name,
             r.target_scopes.is_active(name),
             editable,
