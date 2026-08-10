@@ -76,10 +76,12 @@ impl RuleRow {
             .map(|u| u.allow_count + u.block_count)
             .unwrap_or(0)
     }
-    /// A genuine disable candidate: measured, and never matched. A rule
-    /// nobody counted is not zero-hit, it is unknown.
+    /// A genuine disable candidate: measured, never matched, and something
+    /// Firebreak could actually switch off. A rule nobody counted is not
+    /// zero-hit but unknown; a WFP filter is not a rule at all, so neither
+    /// belongs in the list a user works through deleting things from.
     fn is_zero_hit(&self) -> bool {
-        self.hits_known && self.total_hits() == 0
+        self.hits_known && self.rule.is_editable() && self.total_hits() == 0
     }
     fn orig_scopes(&self) -> crate::model::ScopeSet {
         crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
@@ -348,6 +350,7 @@ pub(crate) enum Sort {
     Action,
     Profiles,
     Scope,
+    Source,
     Hits,
     LastSeen,
     Apps,
@@ -380,6 +383,7 @@ pub(crate) struct ColWidths {
     pub action: f32,
     pub profiles: f32,
     pub scope: f32,
+    pub source: f32,
     pub hits: f32,
     pub last: f32,
     pub listen: f32,
@@ -394,6 +398,7 @@ impl Default for ColWidths {
             action: 54.0,
             profiles: 118.0,
             scope: 150.0,
+            source: 104.0,
             hits: 100.0,
             last: 78.0,
             listen: 132.0,
@@ -872,6 +877,11 @@ impl App {
     fn planned_changes(&self) -> Vec<PlannedChange> {
         let mut out = Vec::new();
         for r in &self.rows {
+            // A WFP filter is not a rule anyone can change; it appears in the
+            // table only to explain traffic. It must never reach a plan.
+            if !r.rule.is_editable() {
+                continue;
+            }
             let orig = r.orig_scopes();
             let was_enabled = r.rule.is_enabled();
             // whole-rule off wins over any profile edit
@@ -1134,6 +1144,7 @@ impl App {
                 Sort::Profiles => ra.rule.profile.cmp(&rb.rule.profile),
                 Sort::Scope => crate::listeners::scope_summary(&ra.rule)
                     .cmp(&crate::listeners::scope_summary(&rb.rule)),
+                Sort::Source => ra.rule.source_label().cmp(&rb.rule.source_label()),
                 Sort::Hits => ra.total_hits().cmp(&rb.total_hits()),
                 Sort::LastSeen => {
                     let la = ra.usage.as_ref().and_then(|u| u.last_seen.clone());

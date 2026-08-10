@@ -7,6 +7,8 @@ use chrono::Utc;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[cfg(windows)]
+use crate::filter_map;
 use crate::listeners::{self, Listener};
 use crate::model::RuleUsage;
 use crate::store::Store;
@@ -407,6 +409,25 @@ pub fn enable_collection(db_path: &Path, progress: &dyn Fn(&str)) -> Result<()> 
     Ok(())
 }
 
+/// Everything filtering traffic that is not a firewall rule, as read-only
+/// rows. Defender network protection, VPN clients and third-party security
+/// software enforce through WFP callouts, so their blocks match no rule —
+/// showing them is how a block with no rule behind it gets a name.
+///
+/// Best-effort: enumeration needs elevation and can fail, and a missing list
+/// costs explanations rather than correctness.
+#[cfg(windows)]
+fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
+    filter_map::enumerate_filters()
+        .map(|f| filter_map::pseudo_rules(&f))
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
+    Vec::new()
+}
+
 /// Build the report rows from rules + aggregated usage + current listeners.
 /// Usage is looked up by exact InstanceID, else by the DisplayName+direction
 /// group key (profile variants share it).
@@ -568,8 +589,9 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
 
     let checkpoint = store.checkpoint_record_id()?;
     progress("Loading firewall rules…");
-    let rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
+    let mut rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
     firewall_rules::save_rules_cache(&rules);
+    rules.extend(wfp_pseudo_rules());
     let now = now_iso();
     store.snapshot_rules(&rules, &now)?;
 

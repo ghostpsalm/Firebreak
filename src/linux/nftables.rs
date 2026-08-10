@@ -93,9 +93,9 @@ impl NftRule {
             remote_port: None,
             service: None,
             remote_address: None,
-            // Linux has no policy-store concept: every rule is local.
-            policy_source: None,
-            policy_source_type: None,
+            // Linux has no policy store; the owning manager is the source.
+            policy_source: Some("nftables".into()),
+            policy_source_type: Some(crate::model::RuleInfo::SOURCE_TYPE_PLATFORM.into()),
         }
     }
 }

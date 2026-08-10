@@ -1468,6 +1468,7 @@ struct Cols {
     action: (f32, f32),
     profiles: (f32, f32),
     scope: (f32, f32),
+    source: (f32, f32),
     hits: (f32, f32),
     last: (f32, f32),
     apps: (f32, f32),
@@ -1482,6 +1483,7 @@ impl Cols {
             + cw.action
             + cw.profiles
             + cw.scope
+            + cw.source
             + cw.hits
             + cw.last
             + cw.listen
@@ -1509,6 +1511,7 @@ impl Cols {
             action: col(cw.action),
             profiles: col(cw.profiles),
             scope: col(cw.scope),
+            source: col(cw.source),
             hits: col(cw.hits),
             last: col(cw.last),
             apps: col(apps_w),
@@ -1653,6 +1656,9 @@ fn table_header(ui: &mut egui::Ui, app: &mut App, cols: &Cols) {
     }
     if header_cell(app, ui, cols.scope, rect, "Scope", Sort::Scope, c).clicked() {
         toggle_sort(app, Sort::Scope);
+    }
+    if header_cell(app, ui, cols.source, rect, "Source", Sort::Source, c).clicked() {
+        toggle_sort(app, Sort::Source);
     }
 
     if usage_hidden {
@@ -2012,6 +2018,31 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
         CELL_PAD,
     );
 
+    // source — where the rule is defined. Anything not Local is emphasised,
+    // because it changes what acting on the rule from here actually achieves.
+    let source = r.rule.source();
+    let source_col = if dimmed {
+        t::DISABLED()
+    } else if source == crate::model::RuleSource::WfpFilter {
+        t::ACCENT()
+    } else if r.rule.is_managed() {
+        t::INK()
+    } else {
+        t::SECONDARY()
+    };
+    cell_text(
+        ui.painter(),
+        col_rect(cols.source, rect),
+        &r.rule.source_label(),
+        if r.rule.is_managed() || source == crate::model::RuleSource::WfpFilter {
+            t::semibold(11.0)
+        } else {
+            t::sans(11.0)
+        },
+        source_col,
+        CELL_PAD,
+    );
+
     // usage columns (hidden on first run)
     if app.phase == Phase::NeedsEnable {
         ui.painter().text(
@@ -2224,7 +2255,7 @@ fn row(app: &mut App, ui: &mut egui::Ui, ri: usize, rect: Rect, cols: &Cols, res
     // interactions
     if let Some(name) = clicked_scope {
         app.rows[ri].target_scopes.toggle(&name);
-    } else if cb_resp.clicked() && app.apply.is_none() {
+    } else if cb_resp.clicked() && app.apply.is_none() && r.rule.is_editable() {
         app.rows[ri].target_enabled = !app.rows[ri].target_enabled;
     } else if rv_resp.clicked() {
         app.toggle_reviewed(ri);
@@ -2504,6 +2535,21 @@ fn detail_panel(app: &mut App, ctx: &egui::Context) {
                             }
                         });
                     });
+                    // Where the rule lives, said plainly — a rule from Group
+                    // Policy or a WFP filter behaves differently when acted
+                    // on, and the one-word column cannot carry that.
+                    ui.add_space(6.0);
+                    pad_label(
+                        ui,
+                        egui::RichText::new(r.rule.source_detail())
+                            .font(t::sans(11.5))
+                            .color(if r.rule.is_editable() {
+                                t::SECONDARY()
+                            } else {
+                                t::ACCENT()
+                            }),
+                    );
+
                     if let Some(desc) = r
                         .rule
                         .description
