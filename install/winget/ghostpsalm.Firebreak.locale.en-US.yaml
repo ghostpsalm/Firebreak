@@ -1,0 +1,24 @@
+PackageIdentifier: ghostpsalm.Firebreak
+PackageVersion: 0.7.79
+PackageLocale: en-US
+Publisher: ghostpsalm
+PublisherUrl: https://github.com/ghostpsalm
+PackageName: Firebreak
+PackageUrl: https://github.com/ghostpsalm/Firebreak
+License: Proprietary
+LicenseUrl: https://github.com/ghostpsalm/Firebreak/blob/main/LICENSE
+ShortDescription: Firewall rule-usage auditor - finds unused and over-broad rules
+Description: |-
+  Firebreak correlates Windows Filtering Platform connection audit events
+  (Security log 5156/5157) with the live WFP filter table and the firewall
+  rule set, to show which rules real traffic actually exercises. It runs,
+  reports and exits - no service, no driver. Requires administrator rights:
+  every read in its evidence loop is admin-bound.
+Moniker: firebreak
+Tags:
+- firewall
+- security
+- audit
+- least-privilege
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -45,6 +45,7 @@ struct Args {
     update: bool,
     check_update: bool,
     install_desktop: bool,
+    uninstall_desktop: bool,
     db_path: std::path::PathBuf,
 }
 
@@ -65,6 +66,7 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
         update: false,
         check_update: false,
         install_desktop: false,
+        uninstall_desktop: false,
         db_path: store::default_db_path(),
     };
     let mut it = args_iter.peekable();
@@ -91,6 +93,7 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--update" => args.update = true,
             "--check-update" => args.check_update = true,
             "--install-desktop" => args.install_desktop = true,
+            "--uninstall-desktop" => args.uninstall_desktop = true,
             "--reset" => args.reset = true,
             "--db" => match it.peek().filter(|p| !p.starts_with("--")) {
                 Some(_) => args.db_path = it.next().unwrap().into(),
@@ -159,7 +162,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20 --install-desktop install a desktop entry so Firebreak can be started\n\
                      \x20                   from the application menu. It asks for authorisation\n\
                      \x20                   at launch (pkexec) because the audit needs root.\n\
-                     \x20                   Run it once, as root, from wherever the binary lives.\n\n\
+                     \x20                   Run it once, as root, from wherever the binary lives.\n\
+                     \x20 --uninstall-desktop  remove that entry again.\n\n\
                      UPDATES (both platforms):\n\
                      \x20 --check-update    report whether a newer release is published.\n\
                      \x20 --update          download, verify and install the newest release.\n\
@@ -225,6 +229,10 @@ fn main() -> Result<()> {
         // useful on a host Firebreak cannot yet audit.
         if args.install_desktop {
             println!("{}", desktop::install()?);
+            return Ok(());
+        }
+        if args.uninstall_desktop {
+            println!("{}", desktop::uninstall()?);
             return Ok(());
         }
         if let Some(backend) = linux::detect()? {

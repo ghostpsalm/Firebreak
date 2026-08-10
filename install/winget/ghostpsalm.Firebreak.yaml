@@ -1,0 +1,9 @@
+# winget manifest (version). Submitted by opening a PR against
+# microsoft/winget-pkgs under manifests/g/ghostpsalm/Firebreak/0.7.79/ —
+# that submission is a deliberate, owner-made step, not something the build
+# does. Validate locally first with:  winget validate --manifest .
+PackageIdentifier: ghostpsalm.Firebreak
+PackageVersion: 0.7.79
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

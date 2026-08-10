@@ -163,6 +163,27 @@ pub fn install_at(exe: &std::path::Path) -> Result<String> {
     ))
 }
 
+/// Remove what [`install_at`] wrote. Idempotent: a missing file is not an
+/// error, because the point is to end with none of them present.
+#[cfg(target_os = "linux")]
+pub fn uninstall() -> Result<String> {
+    let mut removed = Vec::new();
+    for path in [DESKTOP_FILE, ICON_FILE, LAUNCHER] {
+        match std::fs::remove_file(path) {
+            Ok(()) => removed.push(path),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("removing {path}"))),
+        }
+    }
+    if removed.is_empty() {
+        return Ok("No desktop entry was installed; nothing to remove.".into());
+    }
+    Ok(format!(
+        "Removed the desktop entry:\n  {}",
+        removed.join("\n  ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

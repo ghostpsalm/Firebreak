@@ -125,6 +125,23 @@ apply is in flight: `absorb` replaces every row and clears the selection, so
 refreshing then would discard the user's work. Windows has no auto-refresh —
 a refresh there re-ingests the Security log.
 
+## Installing
+
+`install/` holds the two one-line installers (`install.sh` for Linux,
+`install.ps1` for Windows) and the winget manifests. Both scripts verify the
+release signature against the same key the binary pins, abort on a mismatch,
+and — when no verifier is present — continue but say so and print the
+SHA-256 rather than implying a check that did not happen.
+
+Neither script is a packaging afterthought: they exist because Firebreak
+needs privilege, so "download and double-click" cannot work. Linux gets a
+desktop entry (`--install-desktop`, elevating through pkexec at launch);
+Windows gets a Start Menu shortcut whose target carries the
+`requireAdministrator` manifest. The winget manifests are **not** submitted
+by any script — publishing there is a PR against `microsoft/winget-pkgs` and
+an owner's decision; run `install/winget/refresh.sh` first so the hash
+matches the published asset.
+
 ## Dialogs
 
 About and Updates are the same 360px modal in two states — one `scrim` +
