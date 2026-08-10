@@ -344,6 +344,34 @@ impl Store {
         app_normalized: &str,
         profile: &str,
     ) -> Result<()> {
+        // One event, four upserts, all or none. Without the savepoint a
+        // failure partway through leaves the earlier ones applied and part
+        // of the caller's eventual COMMIT — and since a retry re-runs
+        // `count = count + 1`, the fields that did land would be counted
+        // twice. Nested inside whatever transaction the caller holds, so
+        // this does not commit anything on its own.
+        self.conn.execute_batch("SAVEPOINT record_event")?;
+        let result = self.record_event_inner(rule_id, ev, app_normalized, profile);
+        match &result {
+            Ok(()) => self.conn.execute_batch("RELEASE record_event")?,
+            Err(_) => {
+                // roll back to the savepoint *and* release it: a bare
+                // ROLLBACK TO leaves the savepoint on the stack.
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO record_event; RELEASE record_event");
+            }
+        }
+        result
+    }
+
+    fn record_event_inner(
+        &self,
+        rule_id: &str,
+        ev: &EventRecord,
+        app_normalized: &str,
+        profile: &str,
+    ) -> Result<()> {
         let (allow, block) = if ev.is_allow() { (1, 0) } else { (0, 1) };
         let mut stmt = self.conn.prepare_cached(
             "INSERT INTO rule_usage (rule_id, allow_count, block_count, first_seen, last_seen)
@@ -587,6 +615,56 @@ mod tests {
             source_port: "50000".into(),
             interface_index: 0,
         }
+    }
+
+    /// Issue #15: the four upserts are one unit. A failure partway through
+    /// must leave nothing behind, or the retry issue #7 now makes possible
+    /// would add the surviving fields a second time.
+    #[test]
+    fn a_failed_event_write_leaves_no_half_written_row() {
+        let t = TempStore::new("record-atomic");
+        let good = ev(1, 5156, "2026-07-02T00:00:00.000Z", 7);
+        t.store
+            .record_event("r1", &good, "C:/a.exe", "Public")
+            .unwrap();
+
+        // Fail the *third* statement while the first two succeed — only a
+        // partial failure exercises the savepoint. A trigger on rule_apps
+        // aborts one specific app path and nothing else.
+        t.store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_one BEFORE INSERT ON rule_apps
+                 WHEN NEW.app_path = 'C:/poison.exe'
+                 BEGIN SELECT RAISE(ABORT, 'rejected by test'); END;",
+            )
+            .expect("install the failing trigger");
+
+        let before = t.store.all_usage().expect("usage before");
+        let (a0, b0) = before
+            .get("r1")
+            .map(|u| (u.allow_count, u.block_count))
+            .expect("r1 exists");
+
+        let bad = ev(2, 5156, "2026-07-04T00:00:00.000Z", 7);
+        assert!(
+            t.store
+                .record_event("r1", &bad, "C:/poison.exe", "Public")
+                .is_err(),
+            "fixture: this write must fail partway through"
+        );
+
+        let after = t.store.all_usage().expect("usage after");
+        let (a1, b1) = after
+            .get("r1")
+            .map(|u| (u.allow_count, u.block_count))
+            .expect("r1 still exists");
+        assert_eq!(
+            (a0, b0),
+            (a1, b1),
+            "counts applied before the failure must be rolled back, or the retry \
+             enabled by #7 counts them twice"
+        );
     }
 
     #[test]

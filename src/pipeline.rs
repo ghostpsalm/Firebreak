@@ -299,6 +299,7 @@ fn import_events(
     store.begin()?;
     let mut events_processed: u64 = 0;
     let mut unmatched_events: u64 = 0;
+    let mut failed: Option<String> = None;
     let mut bucket_labels: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     progress("Reading events from file…");
@@ -316,10 +317,14 @@ fn import_events(
             bucket_labels
                 .entry(bucket.clone())
                 .or_insert_with(|| origin.to_string());
-            let _ = store.record_event(&bucket, &ev, &app, profile);
+            if let Err(e) = store.record_event(&bucket, &ev, &app, profile) {
+                failed.get_or_insert(format!("{e:#}"));
+            }
         } else {
             for rule_name in matched {
-                let _ = store.record_event(rule_name, &ev, &app, profile);
+                if let Err(e) = store.record_event(rule_name, &ev, &app, profile) {
+                    failed.get_or_insert(format!("{e:#}"));
+                }
             }
         }
     });
@@ -330,6 +335,16 @@ fn import_events(
             return Err(e).context("reading .evtx file");
         }
     };
+    // An import that silently stored only some of the file is worse than one
+    // that refuses: the analyst would be reading a partial picture of
+    // another machine and have no way to tell.
+    if let Some(why) = failed {
+        let _ = store.rollback();
+        return Err(anyhow::anyhow!(
+            "an event from this file could not be stored, so the import was discarded rather \
+             than left partial. Cause: {why}"
+        ));
+    }
     let note = if skipped > 0 {
         format!(
             "{skipped} event(s) in the file matched the audit filter but could not be \
@@ -724,7 +739,11 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
     let mut events_processed: u64 = 0;
     let mut unmatched_events: u64 = 0;
     let mut max_record_id: Option<u64> = None;
-    let mut errors: u64 = 0;
+    // The first write that failed, if any: (record id, why). The whole
+    // ingest is one transaction, so one failed event means the batch is
+    // rolled back and the checkpoint stays put — the run is retried intact
+    // next time rather than stepping over evidence that was never stored.
+    let mut failed: Option<(u64, String)> = None;
     // human labels for the default/system buckets, keyed by their rule_id
     let mut bucket_labels: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -748,14 +767,14 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
             bucket_labels
                 .entry(bucket.clone())
                 .or_insert_with(|| origin.to_string());
-            if store.record_event(&bucket, &ev, &app, profile).is_err() {
-                errors += 1;
+            if let Err(e) = store.record_event(&bucket, &ev, &app, profile) {
+                failed.get_or_insert((ev.record_id, format!("{e:#}")));
             }
         } else {
             // credit every rule whose scope this connection matches
             for rule_name in matched {
-                if store.record_event(rule_name, &ev, &app, profile).is_err() {
-                    errors += 1;
+                if let Err(e) = store.record_event(rule_name, &ev, &app, profile) {
+                    failed.get_or_insert((ev.record_id, format!("{e:#}")));
                 }
             }
         }
@@ -767,8 +786,17 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
             return Err(e).context("querying Security log");
         }
     };
-    if errors > 0 {
-        eprintln!("warning: {errors} events failed to record");
+    // A dropped event is missing security evidence, and the checkpoint
+    // would have advanced past it — it could never be re-read. Refuse the
+    // batch instead: nothing is committed, the checkpoint does not move, and
+    // the next run re-ingests from exactly where this one started.
+    if let Some((record_id, why)) = failed {
+        let _ = store.rollback();
+        return Err(anyhow::anyhow!(
+            "a Security-log event (record {record_id}) could not be stored, so this run was \
+             discarded rather than skipping it — the counts are unchanged and the next run \
+             re-reads from the same point. Cause: {why}"
+        ));
     }
     if skipped > 0 {
         // the checkpoint advances past these, so flag them rather than let
