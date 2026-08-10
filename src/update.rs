@@ -288,7 +288,11 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
 
 /// Relaunch the freshly installed exe and exit this process.
 pub fn restart(exe: &Path) -> ! {
-    let _ = crate::syspath::command(exe).spawn();
+    // Come back the way we were started. Relaunching bare drops whatever
+    // the user ran with — and on Linux a bare launch hits the root check and
+    // exits immediately, so "Restart now" would simply close the app.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let _ = crate::syspath::command(exe).args(&args).spawn();
     std::process::exit(0);
 }
 

@@ -183,6 +183,11 @@ fn main() -> Result<()> {
         return preview::run();
     }
 
+    // Clear a leftover image from a prior self-update. Both platforms leave
+    // the old binary alongside the new one, so both have to sweep it — doing
+    // this only on Windows left a stale copy on every updated Linux host.
+    update::cleanup_old();
+
     // Updating is independent of the firewall backend, and on a headless
     // server the About box is unreachable — so it gets a CLI path on both
     // platforms rather than being GUI-only.
@@ -310,9 +315,6 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
 
 fn run_windows(args: Args) -> Result<()> {
     model::set_vocabulary(model::ScopeVocabulary::windows_profiles());
-
-    // clear a leftover exe image from a prior self-update
-    update::cleanup_old();
 
     if !elevation::is_elevated() {
         // the embedded manifest normally forces a UAC prompt at launch;
