@@ -261,6 +261,11 @@ fn run_update(install: bool) -> Result<()> {
         path.display(),
         update::ASSET
     );
+    #[cfg(target_os = "linux")]
+    println!(
+        "The desktop entry now points at the new binary ({}).",
+        desktop::DESKTOP_FILE
+    );
     Ok(())
 }
 

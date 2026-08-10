@@ -85,20 +85,36 @@ pub fn desktop_entry() -> String {
     )
 }
 
-/// Install the desktop entry, icon and launcher. Idempotent: run it again
-/// after moving the binary and the launcher points at the new path.
+/// Characters that would break out of the launcher's `EXE=` assignment.
+/// Refusing beats emitting a script that runs something other than intended.
+#[cfg(any(target_os = "linux", test))]
+pub fn path_is_safe(exe: &str) -> bool {
+    !exe.is_empty() && !exe.contains(['"', '\'', ' ', '\t', '\n', '$', '`', '\\'])
+}
+
+/// Install the desktop entry, icon and launcher for the running binary.
 #[cfg(target_os = "linux")]
 pub fn install() -> Result<String> {
+    let exe = std::env::current_exe().context("finding this executable's own path")?;
+    install_at(&exe)
+}
+
+/// Install pointing at `exe`. Idempotent: run it again after moving or
+/// replacing the binary and the launcher follows.
+///
+/// The path is taken as an argument rather than read from `current_exe()`
+/// because the one caller that is not the CLI — the updater — runs *after*
+/// swapping binaries, and by then `/proc/self/exe` names the displaced old
+/// file. A launcher pointing there would break at the next cleanup.
+#[cfg(target_os = "linux")]
+pub fn install_at(exe: &std::path::Path) -> Result<String> {
     use std::os::unix::fs::PermissionsExt;
 
-    let exe = std::env::current_exe()
-        .context("finding this executable's own path")?
+    let exe = exe
         .canonicalize()
-        .context("resolving this executable's path")?;
+        .with_context(|| format!("resolving {}", exe.display()))?;
     let exe = exe.to_str().context("executable path is not valid UTF-8")?;
-    // A path with a quote or whitespace would break out of the script's
-    // assignment. Refuse rather than emit something that would run wrong.
-    if exe.contains(['"', '\'', ' ', '\n', '$', '`', '\\']) {
+    if !path_is_safe(exe) {
         anyhow::bail!(
             "the executable path contains characters the launcher cannot quote safely: {exe}\n\
              Move it somewhere plain — /usr/local/bin/firebreak — and run this again."
@@ -182,6 +198,24 @@ mod tests {
         }
         assert!(s.contains("exec pkexec env"));
         assert!(s.starts_with("#!/bin/sh\n"));
+    }
+
+    /// The launcher assigns the path unquoted, so anything the shell would
+    /// re-interpret has to be refused rather than written out.
+    #[test]
+    fn a_path_the_launcher_cannot_quote_is_refused() {
+        assert!(path_is_safe("/usr/local/bin/firebreak"));
+        assert!(path_is_safe("/opt/firebreak-0.7/firebreak"));
+        for bad in [
+            "/home/a b/firebreak",
+            "/tmp/$(id)/firebreak",
+            "/tmp/`id`/firebreak",
+            "/tmp/it's/firebreak",
+            "/tmp/\"q\"/firebreak",
+            "",
+        ] {
+            assert!(!path_is_safe(bad), "{bad:?} must be refused");
+        }
     }
 
     /// Already root — from a terminal, or a desktop that elevated for us —

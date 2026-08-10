@@ -179,6 +179,17 @@ pub fn download_and_install() -> Result<PathBuf> {
         let _ = std::fs::rename(&old, &exe); // roll back so the app still exists on disk
         return Err(anyhow::Error::new(e).context("installing the new exe"));
     }
+
+    // Keep the desktop entry pointing at a binary that exists. It is written
+    // against `exe`, not `current_exe()`: the swap above just moved the
+    // running image to `.old`, so /proc/self/exe now names a file the next
+    // run deletes. Best effort — a read-only /usr is a reason to skip the
+    // launcher, never a reason to fail an update that already succeeded.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = crate::desktop::install_at(&exe) {
+        eprintln!("update installed; the desktop entry was not refreshed: {e:#}");
+    }
+
     Ok(exe)
 }
 
