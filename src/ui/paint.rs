@@ -506,9 +506,12 @@ fn header(app: &mut App, ctx: &egui::Context) {
                 // about the verdict in the gaps between them.
                 if let Some(d) = &app.ctx_info.default_inbound {
                     divider(ui);
-                    stat(
+                    // the caption stays short and the chain text — which can
+                    // be a whole line of nft syntax — waits on the hover
+                    stat_hinted(
                         ui,
                         &format!("Unmatched inbound: {}", d.headline.to_lowercase()),
+                        &d.source,
                         &d.detail,
                     );
                 }
@@ -544,18 +547,39 @@ fn dot(ui: &mut egui::Ui, color: Color32) {
 }
 
 fn stat(ui: &mut egui::Ui, value: &str, caption: &str) {
+    stat_hinted(ui, value, caption, "");
+}
+
+/// A header stat, optionally with the long version on hover.
+///
+/// Both labels truncate. The header is one horizontal row ending in the
+/// theme, Refresh and Settings controls, and egui gives that right-hand
+/// group whatever width is left: a stat wide enough to eat the row pushes
+/// those controls off the edge, and the Settings menu — anchored to its
+/// button — opens somewhere that no longer matches where the button is.
+fn stat_hinted(ui: &mut egui::Ui, value: &str, caption: &str, hint: &str) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
-        ui.label(
-            egui::RichText::new(value)
-                .font(t::semibold(12.0))
-                .color(t::INK()),
+        let v = ui.add(
+            egui::Label::new(
+                egui::RichText::new(value)
+                    .font(t::semibold(12.0))
+                    .color(t::INK()),
+            )
+            .truncate(),
         );
-        ui.label(
-            egui::RichText::new(caption)
-                .font(t::sans(11.0))
-                .color(t::TERTIARY()),
+        let c = ui.add(
+            egui::Label::new(
+                egui::RichText::new(caption)
+                    .font(t::sans(11.0))
+                    .color(t::TERTIARY()),
+            )
+            .truncate(),
         );
+        if !hint.is_empty() {
+            v.on_hover_text(hint);
+            c.on_hover_text(hint);
+        }
     });
 }
 

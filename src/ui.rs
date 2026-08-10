@@ -118,7 +118,11 @@ pub struct DefaultInbound {
     pub headline: String,
     /// Socket-list wording, for a listener no rule matches.
     pub socket_note: String,
-    /// Where it was read from, for the detail panel.
+    /// Short caption naming where it came from — the header has a row to
+    /// share and no room for a line of nft syntax.
+    pub source: String,
+    /// The long version, verbatim enough to check against the host. Shown on
+    /// hover and in the row's detail panel.
     pub detail: String,
 }
 

@@ -155,6 +155,7 @@ fn to_result(
             default_inbound: stance.map(|s| ui::DefaultInbound {
                 headline: s.verdict.headline().to_string(),
                 socket_note: s.verdict.socket_note().to_string(),
+                source: format!("{} default", backend.label()),
                 detail: s.detail.clone(),
             }),
         },

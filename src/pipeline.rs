@@ -473,6 +473,7 @@ fn default_inbound() -> (Option<ui::DefaultInbound>, Vec<ui::RuleRow>) {
         Some(ui::DefaultInbound {
             headline: stance.headline(),
             socket_note: stance.socket_note(),
+            source: "Windows Firewall profiles".into(),
             detail,
         }),
         rows,
