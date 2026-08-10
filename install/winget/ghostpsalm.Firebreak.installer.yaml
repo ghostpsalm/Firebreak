@@ -1,13 +1,13 @@
 PackageIdentifier: ghostpsalm.Firebreak
-PackageVersion: 0.7.79
+PackageVersion: 0.7.80
 InstallerType: portable
 Commands:
 - firebreak
 ReleaseDate: 2026-08-10
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/ghostpsalm/Firebreak/releases/download/v0.7.79/firebreak.exe
-  InstallerSha256: PLACEHOLDER_SHA256
+  InstallerUrl: https://github.com/ghostpsalm/Firebreak/releases/download/v0.7.80/firebreak.exe
+  InstallerSha256: 01DCA74386B72F36D1807970586B400BC635E5A03F1425F705D94E87E96A8BF2
   # Firebreak's manifest is requireAdministrator, so it always elevates.
   ElevationRequirement: elevatesSelf
 ManifestType: installer
