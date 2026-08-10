@@ -211,6 +211,7 @@ pub fn export(out_path: &Path) -> Result<()> {
     let filter_by_id: HashMap<u64, &crate::model::FilterInfo> =
         filters.iter().map(|f| (f.filter_id, f)).collect();
 
+    let (mut dir_agree, mut dir_disagree, mut dir_unknown) = (0u32, 0u32, 0u32);
     match event_query::recent_event_xml(25) {
         Ok(xmls) => {
             let _ = writeln!(o, "sampled {} recent events\n", xmls.len());
@@ -222,7 +223,49 @@ pub fn export(out_path: &Path) -> Result<()> {
                 let _ = writeln!(o, "--- event {i} (EventID {}) ---", ev.event_id);
                 let _ = writeln!(o, "  FilterRTID:    {}", ev.filter_rtid);
                 let _ = writeln!(o, "  FilterOrigin:  {:?}", ev.filter_origin);
-                let _ = writeln!(o, "  Direction:     {}", ev.direction);
+                let raw = raw_direction_token(xml);
+                let _ = writeln!(
+                    o,
+                    "  Direction:     {} (raw token {})",
+                    ev.direction,
+                    raw.as_deref().unwrap_or("?")
+                );
+                // Issue #9: the %% token mapping is documented but was never
+                // confirmed against a real log. The port shape is an entirely
+                // independent read of the same connection, so the tally below
+                // is the check — systematic disagreement means inverted.
+                let lp = ev.source_port.parse::<u16>().ok();
+                let rp = ev.dest_port.parse::<u16>().ok();
+                let (local, remote) = if ev.direction.eq_ignore_ascii_case("inbound") {
+                    (ev.dest_port.parse::<u16>().ok(), lp)
+                } else {
+                    (lp, rp)
+                };
+                match (local, remote) {
+                    (Some(l), Some(r)) => match event_query::port_shape_direction(l, r) {
+                        Some(shape) => {
+                            let agrees = shape.eq_ignore_ascii_case(&ev.direction);
+                            if agrees {
+                                dir_agree += 1;
+                            } else {
+                                dir_disagree += 1;
+                            }
+                            let _ = writeln!(
+                                o,
+                                "  [H0] port shape says {shape} — {} (local {l}, remote {r})",
+                                if agrees { "agrees" } else { "DISAGREES" }
+                            );
+                        }
+                        None => {
+                            dir_unknown += 1;
+                            let _ = writeln!(
+                                o,
+                                "  [H0] port shape inconclusive (local {l}, remote {r})"
+                            );
+                        }
+                    },
+                    _ => dir_unknown += 1,
+                }
                 let _ = writeln!(o, "  Application:   {}", ev.application);
 
                 // hypothesis 1: FilterOrigin names a rule?
@@ -281,6 +324,31 @@ pub fn export(out_path: &Path) -> Result<()> {
         }
     }
 
+    // ---- direction verdict (issue #9) ----
+    section!(o, "DIRECTION TOKEN CROSS-CHECK (issue #9)");
+    let _ = writeln!(
+        o,
+        "Documented mapping: %%14592 = Inbound, %%14593 = Outbound.\n\
+         Each sampled event's decoded direction was compared with the direction its\n\
+         port shape implies — an independent signal that never looks at the token.\n"
+    );
+    let _ = writeln!(o, "agree: {dir_agree}");
+    let _ = writeln!(o, "disagree: {dir_disagree}");
+    let _ = writeln!(o, "inconclusive (port shape says nothing): {dir_unknown}");
+    let verdict = if dir_agree + dir_disagree == 0 {
+        "NO EVIDENCE — no sampled event had an unambiguous port shape. Generate some \
+         traffic to a listening service and to an external host, then re-run."
+    } else if dir_disagree == 0 {
+        "CONSISTENT — every conclusive event agrees with the documented mapping."
+    } else if dir_agree == 0 {
+        "INVERTED — every conclusive event contradicts it. decode_direction is \
+         very likely mapping the two tokens the wrong way round."
+    } else {
+        "MIXED — some events disagree. Expected occasionally (a service dialling \
+         out from its own port), but a large share means the mapping is suspect."
+    };
+    let _ = writeln!(o, "\nverdict: {verdict}");
+
     // ---- raw event XML (2 samples, verbatim) ----
     section!(
         o,
@@ -299,6 +367,15 @@ pub fn export(out_path: &Path) -> Result<()> {
 
     std::fs::write(out_path, o).with_context(|| format!("writing {}", out_path.display()))?;
     Ok(())
+}
+
+/// The Direction field's raw `%%` token, straight out of the event XML —
+/// so the bundle shows what was decoded *from*, not only the decoding.
+fn raw_direction_token(xml: &str) -> Option<String> {
+    let key = "Name=\"Direction\">";
+    let start = xml.find(key)? + key.len();
+    let end = xml[start..].find("</Data>")? + start;
+    Some(xml[start..end].trim().to_string())
 }
 
 fn truncate(s: &str, n: usize) -> String {

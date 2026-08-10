@@ -288,13 +288,52 @@ pub fn newest_record_id() -> Result<Option<u64>> {
     bail!("event log query is only available on Windows")
 }
 
-/// Direction tokens in 5156/5157 EventData. VERIFY on a real box: expected
-/// %%14592 = Inbound, %%14593 = Outbound.
+/// Direction tokens in 5156/5157 EventData: `%%14592` = Inbound,
+/// `%%14593` = Outbound. These are message-table constants, and the mapping
+/// is the one Microsoft documents for both event ids.
+///
+/// It is load-bearing — direction drives scope attribution and the Dir
+/// column — and an inversion would be silent, so it is not left resting on
+/// documentation alone: the support bundle cross-checks every sampled event
+/// against [`port_shape_direction`] and reports the tally. See issue #9.
 fn decode_direction(raw: &str) -> String {
     match raw {
         "%%14592" => "Inbound".to_string(),
         "%%14593" => "Outbound".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// Which way a connection almost certainly ran, judged only by its ports.
+///
+/// The service side of a TCP/UDP connection listens on the lower, fixed
+/// port; the initiating side gets an ephemeral high one. So if the *local*
+/// port is the service port, traffic came in; if the remote port is, it went
+/// out. Independent of the `%%` token entirely, which is what makes it worth
+/// comparing against: agreement across a sample is evidence the token
+/// mapping is right, and systematic disagreement is evidence it is inverted.
+///
+/// `None` where the shape says nothing — both ports ephemeral, both
+/// well-known, or equal. A guess here would weaken the very check it exists
+/// to make.
+pub fn port_shape_direction(local_port: u16, remote_port: u16) -> Option<&'static str> {
+    /// Where the ephemeral range starts on modern Windows.
+    const EPHEMERAL: u16 = 49152;
+    let local_service = local_port < 1024;
+    let remote_service = remote_port < 1024;
+    let local_ephemeral = local_port >= EPHEMERAL;
+    let remote_ephemeral = remote_port >= EPHEMERAL;
+    match (
+        local_service,
+        remote_service,
+        local_ephemeral,
+        remote_ephemeral,
+    ) {
+        // local is the well-known service, remote is a client's high port
+        (true, false, _, true) => Some("Inbound"),
+        // remote is the well-known service, we hold the high port
+        (false, true, true, _) => Some("Outbound"),
+        _ => None,
     }
 }
 
@@ -429,6 +468,25 @@ pub fn parse_event_xml(xml: &str) -> Option<EventRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cross-check for issue #9. It must only speak where the port shape
+    /// is unambiguous — a check that guesses cannot be evidence about the
+    /// token mapping it is checking.
+    #[test]
+    fn port_shape_only_answers_when_the_shape_is_unambiguous() {
+        // a client on a high port reaching our SSH/HTTPS listener
+        assert_eq!(port_shape_direction(22, 51000), Some("Inbound"));
+        assert_eq!(port_shape_direction(443, 60123), Some("Inbound"));
+        // us on a high port reaching someone else's listener
+        assert_eq!(port_shape_direction(51000, 443), Some("Outbound"));
+
+        // both ephemeral, both well-known, or registered-range ports on both
+        // sides: nothing to conclude
+        assert_eq!(port_shape_direction(51000, 60000), None);
+        assert_eq!(port_shape_direction(80, 443), None);
+        assert_eq!(port_shape_direction(8080, 9000), None);
+        assert_eq!(port_shape_direction(5353, 5353), None);
+    }
 
     const SAMPLE: &str = r#"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>
 <System><Provider Name='Microsoft-Windows-Security-Auditing' Guid='{54849625-5478-4994-a5ba-3e3b0328c30d}'/>
