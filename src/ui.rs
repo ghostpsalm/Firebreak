@@ -466,6 +466,40 @@ pub struct App {
     /// scratch DB for the current .evtx import session (persists across
     /// "Add" imports so multiple machines can be reviewed together)
     import_db: Option<PathBuf>,
+    /// When the counters were last read, for the repeating refresh.
+    #[cfg(target_os = "linux")]
+    last_read: std::time::Instant,
+}
+
+/// How often the open window re-reads the kernel's counters.
+///
+/// Linux only. A Linux refresh is a counter read costing milliseconds, so
+/// the number on screen can track traffic as it arrives; a Windows refresh
+/// re-ingests the Security log and re-enumerates every rule through
+/// PowerShell, which is seconds of work and must stay the user's decision.
+#[cfg(target_os = "linux")]
+const AUTO_REFRESH: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a background re-read may replace the table right now.
+///
+/// Each of these is a way the refresh would take something from the user:
+/// `absorb` swaps every row out, so a staged change is discarded, and it
+/// clears the selection, so an open drawer closes under the cursor.
+#[cfg(any(target_os = "linux", test))]
+fn auto_refresh_ok(
+    phase: Phase,
+    worker_busy: bool,
+    applying: bool,
+    drawer_open: bool,
+    menu_open: bool,
+    staged_changes: usize,
+) -> bool {
+    phase == Phase::Ready
+        && !worker_busy
+        && !applying
+        && !drawer_open
+        && !menu_open
+        && staged_changes == 0
 }
 
 impl App {
@@ -508,6 +542,8 @@ impl App {
             update: std::sync::Arc::new(std::sync::Mutex::new(UpdateState::Idle)),
             logo: None,
             import_db: None,
+            #[cfg(target_os = "linux")]
+            last_read: std::time::Instant::now(),
         }
     }
 
@@ -528,6 +564,54 @@ impl App {
         let mut app = App::base(Some(db_path.clone()));
         app.spawn_detect(db_path, egui_ctx);
         app
+    }
+
+    /// Re-read the counters on a timer so the totals track traffic while the
+    /// window is open. Unlike [`App::spawn_detect`] the phase stays `Ready`:
+    /// the header must not flash "Reading…" every five seconds, and there is
+    /// nothing to re-detect — the backend does not change under us.
+    #[cfg(target_os = "linux")]
+    fn spawn_recount(&mut self, db_path: PathBuf, egui_ctx: egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.worker_rx = Some(rx);
+        std::thread::spawn(move || {
+            let msg = match backend::recount(&db_path) {
+                Ok(r) => WorkerMsg::Ready(Box::new(r)),
+                Err(e) => WorkerMsg::Failed(format!("{e:#}")),
+            };
+            let _ = tx.send(msg);
+            egui_ctx.request_repaint();
+        });
+    }
+
+    /// Fire the repeating refresh when it is due and nothing on screen would
+    /// lose by it. Also keeps the frame clock alive: without a repaint
+    /// request an idle egui window sleeps, and a count that only moves when
+    /// the mouse does looks broken.
+    #[cfg(target_os = "linux")]
+    fn maybe_auto_refresh(&mut self, ctx: &egui::Context) {
+        let Some(db) = self.db_path.clone() else {
+            return;
+        };
+        let waited = self.last_read.elapsed();
+        if waited < AUTO_REFRESH {
+            ctx.request_repaint_after(AUTO_REFRESH - waited);
+            return;
+        }
+        if !auto_refresh_ok(
+            self.phase,
+            self.worker_rx.is_some(),
+            self.apply.is_some() || self.confirm_open,
+            self.selected.is_some(),
+            self.settings_open || self.about_open,
+            self.planned_changes().len(),
+        ) {
+            // try again on the next tick rather than the next mouse move
+            ctx.request_repaint_after(AUTO_REFRESH);
+            return;
+        }
+        self.last_read = std::time::Instant::now();
+        self.spawn_recount(db, ctx.clone());
     }
 
     fn spawn_detect(&mut self, db_path: PathBuf, egui_ctx: egui::Context) {
@@ -845,6 +929,12 @@ impl App {
                     let ev = r.ctx.events_processed;
                     let un = r.ctx.unmatched_events;
                     self.absorb(*r);
+                    // any completed read restarts the clock, so a manual
+                    // refresh is not chased by an automatic one
+                    #[cfg(target_os = "linux")]
+                    {
+                        self.last_read = std::time::Instant::now();
+                    }
                     self.phase = Phase::Ready;
                     self.status = format!("Ingested {ev} events ({un} unattributed).");
                     self.worker_rx = None;
@@ -1179,6 +1269,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
         self.poll_apply(ctx);
+        #[cfg(target_os = "linux")]
+        self.maybe_auto_refresh(ctx);
         paint::window(self, ctx);
     }
 }
@@ -1461,5 +1553,53 @@ mod helpers {
             None
         };
         (w + 3.0, resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The repeating refresh replaces every row, so anything the user is
+    /// part-way through must hold it off. Each case below is a way real work
+    /// would otherwise vanish between one tick and the next.
+    #[test]
+    fn auto_refresh_waits_for_the_user_to_finish() {
+        let idle = || auto_refresh_ok(Phase::Ready, false, false, false, false, 0);
+        assert!(idle(), "an idle, settled window is exactly when to refresh");
+
+        // a staged disable is unsaved work; absorbing new rows discards it
+        assert!(!auto_refresh_ok(
+            Phase::Ready,
+            false,
+            false,
+            false,
+            false,
+            1
+        ));
+        // drawer open: absorb clears the selection and it would shut
+        assert!(!auto_refresh_ok(Phase::Ready, false, false, true, false, 0));
+        // a menu closes the moment the table under it is rebuilt
+        assert!(!auto_refresh_ok(Phase::Ready, false, false, false, true, 0));
+        // never two reads at once, and never over an apply in flight
+        assert!(!auto_refresh_ok(Phase::Ready, true, false, false, false, 0));
+        assert!(!auto_refresh_ok(Phase::Ready, false, true, false, false, 0));
+        // and not before the first read has landed
+        assert!(!auto_refresh_ok(
+            Phase::Loading,
+            false,
+            false,
+            false,
+            false,
+            0
+        ));
+        assert!(!auto_refresh_ok(
+            Phase::NeedsEnable,
+            false,
+            false,
+            false,
+            false,
+            0
+        ));
     }
 }

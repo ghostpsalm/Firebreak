@@ -176,6 +176,28 @@ pub fn analyze(backend: Backend, prior: &PriorState) -> Result<(Report, PriorSta
     }
 }
 
+/// Re-read the counters against the rule vocabulary of the last full pass,
+/// for a refresh that repeats while the window is open.
+///
+/// The evidence — a kernel counter — changes second by second; the rules it
+/// is attached to change when an administrator edits them. Only firewalld
+/// pays a real price to re-read its vocabulary (a `firewall-cmd` per zone
+/// and per service, seconds in total), so only firewalld skips it here; ufw
+/// and nftables read theirs from a file and the kernel and are re-read whole.
+/// A firewalld rule added since the last full pass therefore appears at the
+/// next full pass, not the next tick — and it has no counter until then
+/// either, so counting it would not have worked anyway.
+pub fn recount(backend: Backend, prior: &PriorState) -> Result<(Report, PriorState)> {
+    match backend {
+        Backend::Ufw => analyze_ufw(prior),
+        Backend::Nftables => analyze_nftables(prior),
+        Backend::Firewalld => match firewalld::cached_zones() {
+            Some(zones) => analyze_firewalld_zones(&zones, prior),
+            None => analyze_firewalld(prior),
+        },
+    }
+}
+
 /// Is this backend's instrumentation currently in place? Meaningless for a
 /// backend that needs none, which reports true.
 pub fn collection_active(backend: Backend) -> bool {
@@ -226,9 +248,16 @@ pub fn stop_collection(backend: Backend, db_path: &std::path::Path) -> Result<St
 }
 
 fn analyze_firewalld(prior: &PriorState) -> Result<(Report, PriorState)> {
+    let zones = firewalld::read_zones()?;
+    analyze_firewalld_zones(&zones, prior)
+}
+
+fn analyze_firewalld_zones(
+    zones: &firewalld::Zones,
+    prior: &PriorState,
+) -> Result<(Report, PriorState)> {
     use std::collections::BTreeMap;
 
-    let zones = firewalld::read_zones()?;
     let live_listeners = proc::enumerate_listeners();
     let mut report = Report::default();
     report.unmeasurable.extend(zones.unmeasurable.clone());

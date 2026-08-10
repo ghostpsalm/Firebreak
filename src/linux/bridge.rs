@@ -79,6 +79,19 @@ fn require_backend() -> Result<super::Backend> {
     })
 }
 
+/// A repeating refresh: the same fold as [`analyze`], but reusing the rule
+/// vocabulary the last full pass read. Cheap enough to run on a timer —
+/// see [`super::recount`] for what it deliberately does not re-read.
+pub fn recount(db_path: &Path) -> Result<AnalysisResult> {
+    let backend = require_backend()?;
+    let store = crate::store::Store::open(db_path)?;
+    let prior = store.load_counter_state()?;
+    let (report, next) = super::recount(backend, &prior)?;
+    store.save_counter_state(&next)?;
+    let reviewed = store.load_reviewed().unwrap_or_default();
+    Ok(to_result(backend, report, true, &reviewed))
+}
+
 /// Fold a backend report into the shared result type.
 type Reviewed = std::collections::HashMap<String, (String, String)>;
 

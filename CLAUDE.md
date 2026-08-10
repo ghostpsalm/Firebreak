@@ -90,6 +90,18 @@ thing that lints `src/linux/` at all. Don't drop it.
 CI (`.github/workflows/ci.yml`) runs the same gate on push/PR to `main`,
 installing `mingw-w64` first.
 
+## Auto-refresh (Linux)
+
+The open window re-reads counters every 5s. A *full* pass costs seconds —
+one `firewall-cmd` per zone and per service at ~240ms each — while the
+counter read is ~7ms, so the tick re-reads counters against the vocabulary
+cached by the last full pass (`firewalld::cached_zones`, `linux::recount`).
+Full passes happen on open, on Refresh now, and after an apply. The tick
+stands down whenever a change is staged, the drawer or a menu is open, or an
+apply is in flight: `absorb` replaces every row and clears the selection, so
+refreshing then would discard the user's work. Windows has no auto-refresh —
+a refresh there re-ingests the Security log.
+
 ## Conventions
 
 - **Commits**: short imperative summary line, no period, occasionally with

@@ -95,7 +95,7 @@ impl FwdRule {
 }
 
 /// What a zone contains, split into what Firebreak can and cannot count.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Zones {
     pub rules: Vec<FwdRule>,
     /// (id, reason) for configuration that exists but cannot be measured.
@@ -304,8 +304,31 @@ pub fn parse_zone(zone: &str, text: &str, expand: &dyn Fn(&str) -> Vec<(String, 
     z
 }
 
+/// The zone vocabulary of the last full read, for this process only.
+///
+/// Reading zones costs one `firewall-cmd` per zone and per service — around
+/// a quarter-second each, several seconds in total — while reading the
+/// counters those zones map to costs a few milliseconds. A repeating
+/// refresh wants the counters, not the vocabulary, so it reuses this and a
+/// zone the admin adds meanwhile shows up at the next full read rather than
+/// at the next tick.
+static LAST_ZONES: std::sync::Mutex<Option<Zones>> = std::sync::Mutex::new(None);
+
+/// The cached vocabulary, if a full read has happened in this process.
+pub fn cached_zones() -> Option<Zones> {
+    LAST_ZONES.lock().ok().and_then(|z| z.clone())
+}
+
 /// Read every active zone.
 pub fn read_zones() -> Result<Zones> {
+    let zones = read_zones_uncached()?;
+    if let Ok(mut slot) = LAST_ZONES.lock() {
+        *slot = Some(zones.clone());
+    }
+    Ok(zones)
+}
+
+fn read_zones_uncached() -> Result<Zones> {
     let mut all = Zones {
         names: active_zones(&firewall_cmd(&["--get-active-zones"])?),
         ..Zones::default()
