@@ -18,10 +18,12 @@ pub fn now_iso() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-/// Full version: major.minor.patch.build (build = git commit count, set at
-/// compile time). e.g. "0.5.3.412".
+/// The build's version: major.minor.patch, e.g. "0.7.12". The patch
+/// component is the release counter and simply goes up; there is no
+/// separate build number, so what the app reports is exactly what the
+/// Cargo manifest and the release tag say.
 pub fn version_string() -> String {
-    format!("{}.{}", env!("CARGO_PKG_VERSION"), env!("FIREBREAK_BUILD"))
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 pub fn hostname() -> String {
