@@ -80,6 +80,14 @@ pub fn enable_collection(db_path: &Path, progress: &dyn Fn(&str)) -> Result<()> 
     Ok(())
 }
 
+/// Stop collecting — removes whatever [`enable_collection`] installed.
+/// Collected totals stay in the store; this stops counting, it does not
+/// discard evidence.
+pub fn stop_collection(db_path: &Path) -> Result<String> {
+    let backend = require_backend()?;
+    super::stop_collection(backend, db_path)
+}
+
 fn require_backend() -> Result<super::Backend> {
     super::detect()?.ok_or_else(|| {
         anyhow::anyhow!(

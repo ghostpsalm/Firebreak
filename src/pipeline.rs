@@ -372,6 +372,23 @@ fn import_events(
 
 /// First-run path: record prior audit config, enable auditing, size the
 /// log, snapshot rules, and start the checkpoint cursor. Idempotent.
+/// Stop collecting: turn Filtering Platform Connection auditing back off.
+///
+/// Windows-side only: on Linux the UI's `backend` alias is `linux::bridge`,
+/// which has its own — there is no audit policy to turn off there.
+///
+/// The counterpart of [`enable_collection`], and the Windows half of the
+/// UI's Stop button. Collected evidence is left alone — this stops new
+/// evidence accruing, it does not discard what was gathered.
+#[cfg(not(target_os = "linux"))]
+pub fn stop_collection(_db_path: &Path) -> Result<String> {
+    audit_control::set_auditing(audit_control::AuditState {
+        success: false,
+        failure: false,
+    })?;
+    Ok("Connection auditing turned off. Collected evidence is kept.".into())
+}
+
 pub fn enable_collection(db_path: &Path, progress: &dyn Fn(&str)) -> Result<()> {
     let store = Store::open(db_path)?;
     let audit_state = audit_control::query_audit_state()?;

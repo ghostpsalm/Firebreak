@@ -937,16 +937,31 @@ impl App {
 
     /// Turn off Filtering Platform Connection auditing and return to the
     /// first-run (auditing-off) view. Live collection stops.
+    /// Stop collecting.
+    ///
+    /// This used to call the Windows audit-policy API directly and discard
+    /// the result, which meant two failures at once: a Windows host whose
+    /// policy write failed was told nothing, and on Linux the call could
+    /// only ever fail — there is no audit policy there — so Stop silently
+    /// did nothing while the shadow counter table stayed installed. It now
+    /// goes through the platform's own stop path and says what happened.
     fn stop_auditing(&mut self, egui_ctx: &egui::Context) {
-        let _ = crate::audit_control::set_auditing(crate::audit_control::AuditState {
-            success: false,
-            failure: false,
-        });
-        self.import_db = None;
-        if let Some(db) = self.db_path.clone() {
-            self.phase = Phase::Loading;
-            self.spawn_detect(db, egui_ctx.clone());
+        let Some(db) = self.db_path.clone() else {
+            self.report("Preview mode — there is nothing to stop.", false);
+            return;
+        };
+        match backend::stop_collection(&db) {
+            Ok(msg) => self.report(msg, false),
+            Err(e) => {
+                // Collection is still running: say so rather than dropping
+                // back to the first-run screen, which would claim otherwise.
+                self.report(format!("Could not stop collecting: {e:#}"), true);
+                return;
+            }
         }
+        self.import_db = None;
+        self.phase = Phase::Loading;
+        self.spawn_detect(db, egui_ctx.clone());
     }
 
     fn new_ready(
