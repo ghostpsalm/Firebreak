@@ -1,16 +1,4 @@
 fn main() {
-    // build number = git commit count (monotonic, unique per commit).
-    let build = std::process::Command::new("git")
-        .args(["rev-list", "--count", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "0".to_string());
-    println!("cargo:rustc-env=FIREBREAK_BUILD={build}");
-    println!("cargo:rerun-if-changed=.git/HEAD");
-
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let manifest = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">

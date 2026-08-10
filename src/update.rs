@@ -12,10 +12,16 @@ use std::path::{Path, PathBuf};
 /// `owner/repo` hosting the releases. Local-only today — set this to the real
 /// repository when firebreak is published. Until a reachable release exists the
 /// update UI degrades gracefully (it reports that it couldn't reach updates).
-pub const REPO: &str = "ghostpsalm/firebreak";
+pub const REPO: &str = "ghostpsalm/Firebreak";
 
-/// Asset uploaded to each release.
+/// The asset this build updates itself from. Each platform publishes its own
+/// binary to the same release, so a Linux host never downloads a .exe.
+#[cfg(windows)]
 pub const ASSET: &str = "firebreak.exe";
+#[cfg(target_os = "linux")]
+pub const ASSET: &str = "firebreak-linux-x86_64";
+#[cfg(not(any(windows, target_os = "linux")))]
+pub const ASSET: &str = "firebreak";
 
 /// The single persistent download link — always resolves to the newest asset.
 pub fn download_url() -> String {
@@ -23,7 +29,6 @@ pub fn download_url() -> String {
 }
 
 /// Detached minisign signature published next to the asset.
-#[cfg(windows)]
 pub fn signature_url() -> String {
     format!("{}.minisig", download_url())
 }
@@ -67,30 +72,42 @@ pub fn check() -> Result<Release> {
     })
 }
 
-/// The newest release tag. WinHTTP first (no subprocess); PowerShell fallback.
-#[cfg(windows)]
+/// The newest release tag.
 fn latest_tag() -> Result<String> {
     let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    match crate::winhttp::get(&api, "Accept: application/vnd.github+json") {
-        Ok(body) => {
-            let json: serde_json::Value =
-                serde_json::from_slice(&body).context("parsing releases/latest JSON")?;
-            Ok(json
-                .get("tag_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string())
-        }
+    let body = fetch_json(&api).context("asking GitHub for the latest release")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&body).context("parsing releases/latest JSON")?;
+    Ok(json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
+}
+
+/// GitHub's API needs an Accept header; asset downloads do not.
+#[cfg(windows)]
+fn fetch_json(url: &str) -> Result<Vec<u8>> {
+    match crate::winhttp::get(url, "Accept: application/vnd.github+json") {
+        Ok(body) => Ok(body),
         Err(e) => {
             eprintln!("WinHTTP update check failed ({e:#}); falling back to PowerShell");
-            latest_tag_subprocess(&api)
+            latest_tag_subprocess_bytes(url)
         }
     }
 }
 
 #[cfg(not(windows))]
-fn latest_tag() -> Result<String> {
-    anyhow::bail!("update checks are only available on Windows")
+fn fetch_json(url: &str) -> Result<Vec<u8>> {
+    fetch(url)
+}
+
+#[cfg(windows)]
+fn latest_tag_subprocess_bytes(api: &str) -> Result<Vec<u8>> {
+    latest_tag_subprocess(api).map(|tag| {
+        // re-wrap as the minimal JSON the caller parses
+        format!("{{\"tag_name\":\"{tag}\"}}").into_bytes()
+    })
 }
 
 #[cfg(windows)]
@@ -143,8 +160,19 @@ pub fn download_and_install() -> Result<PathBuf> {
 
     std::fs::write(&new, &bytes).with_context(|| format!("writing {}", new.display()))?;
 
-    // Windows lets us rename a running exe but not overwrite it: move the
-    // running image aside, then swap the new build into its place.
+    // A downloaded file is not executable on Unix. Without this the swap
+    // succeeds and the *next* launch fails with a permission error, which
+    // looks like a corrupt update rather than a missing mode bit.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", new.display()))?;
+    }
+
+    // Neither platform lets a running image be overwritten in place, but both
+    // allow it to be renamed: move the running binary aside, then swap the
+    // new build into its place.
     let _ = std::fs::remove_file(&old);
     std::fs::rename(&exe, &old).context("moving the running exe aside")?;
     if let Err(e) = std::fs::rename(&new, &exe) {
@@ -157,7 +185,6 @@ pub fn download_and_install() -> Result<PathBuf> {
 /// Verify `bytes` against the pinned minisign public key using the detached
 /// `.minisig` published next to the asset. Fails closed: no configured key,
 /// an unfetchable/malformed signature, or a mismatch all refuse the install.
-#[cfg(windows)]
 fn verify_signature(bytes: &[u8]) -> Result<()> {
     use minisign_verify::{PublicKey, Signature};
     if !signing_configured() {
@@ -175,11 +202,6 @@ fn verify_signature(bytes: &[u8]) -> Result<()> {
     pk.verify(bytes, &sig, false)
         .map_err(|e| anyhow!("signature verification failed — refusing to install: {e}"))?;
     Ok(())
-}
-
-#[cfg(not(windows))]
-fn verify_signature(_bytes: &[u8]) -> Result<()> {
-    anyhow::bail!("updates are only available on Windows")
 }
 
 /// Fetch a URL into memory. WinHTTP first (no subprocess); PowerShell fallback.
@@ -217,9 +239,51 @@ fn fetch(url: &str) -> Result<Vec<u8>> {
     }
 }
 
+/// Fetch a URL on Linux. curl is spawned by absolute path rather than
+/// linking a TLS stack: the tool already spawns system binaries this way,
+/// and adding an HTTP client would pull a second TLS implementation into a
+/// binary that runs as root. HTTPS is pinned with --proto so a redirect
+/// cannot downgrade the transport.
 #[cfg(not(windows))]
-fn fetch(_url: &str) -> Result<Vec<u8>> {
-    anyhow::bail!("downloads are only available on Windows")
+fn fetch(url: &str) -> Result<Vec<u8>> {
+    let curl = crate::syspath::system_tool("curl")
+        .ok_or_else(|| anyhow!("curl is not installed, so Firebreak cannot download an update"))?;
+    let dest = std::env::temp_dir().join(format!("firebreak-fetch-{}.bin", std::process::id()));
+    let _ = std::fs::remove_file(&dest);
+    let out = crate::syspath::command(curl)
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            // never let a redirect move us off HTTPS
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "--max-time",
+            "120",
+            "--user-agent",
+            "firebreak",
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--output",
+            &dest.to_string_lossy(),
+            url,
+        ])
+        .output()
+        .context("running curl")?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&dest);
+        return Err(anyhow!(
+            "download failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let bytes = std::fs::read(&dest).with_context(|| format!("reading {}", dest.display()))?;
+    let _ = std::fs::remove_file(&dest);
+    Ok(bytes)
 }
 
 /// Relaunch the freshly installed exe and exit this process.

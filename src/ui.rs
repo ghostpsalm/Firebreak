@@ -10,9 +10,21 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::listeners::Listener;
 use crate::model::{BaselineFlag, RuleInfo, RuleUsage};
-use crate::pipeline::{self, AnalysisResult, UnmatchedRow};
+#[cfg(not(target_os = "linux"))]
+use crate::pipeline;
+use crate::pipeline::{AnalysisResult, UnmatchedRow};
+
+#[cfg(not(target_os = "linux"))]
+use crate::firewall_rules;
+/// Where the UI worker gets its data. Windows ingests audit events through
+/// `pipeline`; Linux reads rule counters through `linux::bridge`. Both expose
+/// the same four entry points, so the worker below is written once.
+#[cfg(target_os = "linux")]
+use crate::linux::bridge as backend;
+#[cfg(not(target_os = "linux"))]
+use crate::pipeline as backend;
 use crate::theme::{self as t};
-use crate::{firewall_rules, time_util};
+use crate::time_util;
 
 const ROW_H: f32 = 31.0;
 const HEADER_H: f32 = 28.0;
@@ -28,6 +40,11 @@ pub struct RuleRow {
     /// intended scope (edited via the scope chips)
     pub target_scopes: crate::model::ScopeSet,
     pub reviewed: ReviewState,
+    /// Whether this rule's traffic was actually measured. False means the
+    /// backend could not count it — a firewalld rich rule, an nft rule with
+    /// no counter. It must never render or filter as "zero hits", because
+    /// zero invites deleting the rule and unknown does not.
+    pub hits_known: bool,
 }
 
 /// User attestation state for a rule. `Stale` = it was reviewed, but the
@@ -59,8 +76,12 @@ impl RuleRow {
             .map(|u| u.allow_count + u.block_count)
             .unwrap_or(0)
     }
+    /// A genuine disable candidate: measured, never matched, and something
+    /// Firebreak could actually switch off. A rule nobody counted is not
+    /// zero-hit but unknown; a WFP filter is not a rule at all, so neither
+    /// belongs in the list a user works through deleting things from.
     fn is_zero_hit(&self) -> bool {
-        self.total_hits() == 0
+        self.hits_known && self.rule.is_editable() && self.total_hits() == 0
     }
     fn orig_scopes(&self) -> crate::model::ScopeSet {
         crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
@@ -329,6 +350,7 @@ pub(crate) enum Sort {
     Action,
     Profiles,
     Scope,
+    Source,
     Hits,
     LastSeen,
     Apps,
@@ -361,6 +383,7 @@ pub(crate) struct ColWidths {
     pub action: f32,
     pub profiles: f32,
     pub scope: f32,
+    pub source: f32,
     pub hits: f32,
     pub last: f32,
     pub listen: f32,
@@ -375,6 +398,7 @@ impl Default for ColWidths {
             action: 54.0,
             profiles: 118.0,
             scope: 150.0,
+            source: 104.0,
             hits: 100.0,
             last: 78.0,
             listen: 132.0,
@@ -521,8 +545,12 @@ impl App {
             };
             // audit state first — cheap, and lets the header settle before
             // the slower rule enumeration
-            progress("Checking Windows audit policy…");
-            let enabled = match pipeline::audit_enabled() {
+            progress(if cfg!(target_os = "linux") {
+                "Detecting firewall backend…"
+            } else {
+                "Checking Windows audit policy…"
+            });
+            let enabled = match backend::audit_enabled() {
                 Ok(b) => b,
                 Err(e) => {
                     let _ = tx.send(WorkerMsg::Failed(format!("{e:#}")));
@@ -535,17 +563,17 @@ impl App {
 
             if enabled {
                 // instant paint from cached rules while the live query runs
-                if let Some(prelim) = pipeline::quick_cached_result(&db_path) {
+                if let Some(prelim) = backend::quick_cached_result(&db_path) {
                     let _ = tx.send(WorkerMsg::Preliminary(Box::new(prelim)));
                     egui_ctx.request_repaint();
                 }
-                let msg = match pipeline::analyze(&db_path, &progress) {
+                let msg = match backend::analyze(&db_path, &progress) {
                     Ok(r) => WorkerMsg::Ready(Box::new(r)),
                     Err(e) => WorkerMsg::Failed(format!("{e:#}")),
                 };
                 let _ = tx.send(msg);
             } else {
-                let msg = match pipeline::rules_only(&progress) {
+                let msg = match backend::rules_only(&progress) {
                     Ok(r) => WorkerMsg::NeedsEnable(Box::new(r)),
                     Err(e) => WorkerMsg::Failed(format!("{e:#}")),
                 };
@@ -770,8 +798,8 @@ impl App {
                     ctx.request_repaint();
                 }
             };
-            let msg = match pipeline::enable_collection(&db_path, &progress)
-                .and_then(|()| pipeline::analyze(&db_path, &progress))
+            let msg = match backend::enable_collection(&db_path, &progress)
+                .and_then(|()| backend::analyze(&db_path, &progress))
             {
                 Ok(r) => WorkerMsg::Ready(Box::new(r)),
                 Err(e) => WorkerMsg::Failed(format!("{e:#}")),
@@ -849,6 +877,11 @@ impl App {
     fn planned_changes(&self) -> Vec<PlannedChange> {
         let mut out = Vec::new();
         for r in &self.rows {
+            // A WFP filter is not a rule anyone can change; it appears in the
+            // table only to explain traffic. It must never reach a plan.
+            if !r.rule.is_editable() {
+                continue;
+            }
             let orig = r.orig_scopes();
             let was_enabled = r.rule.is_enabled();
             // whole-rule off wins over any profile edit
@@ -920,6 +953,7 @@ impl App {
         }
         let total = plan.len();
         let all_rules: Vec<RuleInfo> = self.rows.iter().map(|r| r.rule.clone()).collect();
+        let db_path = self.db_path.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         self.apply = Some(ApplyState {
             rx,
@@ -934,7 +968,7 @@ impl App {
         });
         let egui_ctx = egui_ctx.clone();
         std::thread::spawn(move || {
-            match firewall_rules::backup_policy(&all_rules) {
+            match platform_backup(&all_rules, db_path.as_deref()) {
                 Ok(path) => {
                     let _ = tx.send(ApplyMsg::BackupOk(path.display().to_string()));
                 }
@@ -950,13 +984,7 @@ impl App {
                     name: change.name.clone(),
                 });
                 egui_ctx.request_repaint();
-                let result = match &change.kind {
-                    ChangeKind::Disable => firewall_rules::set_rule_enabled(&change.name, false),
-                    ChangeKind::Enable => firewall_rules::set_rule_enabled(&change.name, true),
-                    ChangeKind::Profiles { arg, .. } => {
-                        firewall_rules::set_rule_profiles(&change.name, arg)
-                    }
-                };
+                let result = platform_apply(&change);
                 let _ = tx.send(ApplyMsg::RuleDone {
                     name: change.name,
                     error: result.err().map(|e| format!("{e:#}")),
@@ -1116,6 +1144,7 @@ impl App {
                 Sort::Profiles => ra.rule.profile.cmp(&rb.rule.profile),
                 Sort::Scope => crate::listeners::scope_summary(&ra.rule)
                     .cmp(&crate::listeners::scope_summary(&rb.rule)),
+                Sort::Source => ra.rule.source_label().cmp(&rb.rule.source_label()),
                 Sort::Hits => ra.total_hits().cmp(&rb.total_hits()),
                 Sort::LastSeen => {
                     let la = ra.usage.as_ref().and_then(|u| u.last_seen.clone());
@@ -1251,14 +1280,101 @@ pub fn run_preview(
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
 }
 
-// small helpers shared with the paint module
-pub(crate) fn profile_chip(tag: &str) -> (&'static str, Color32, Color32, Color32) {
-    match tag {
-        "Domain" => t::CHIP_DOM(),
-        "Private" => t::CHIP_PRV(),
-        "Public" => t::CHIP_PUB(),
-        _ => t::CHIP_ANY(),
+// ---- platform apply seam ----
+//
+// Windows toggles a flag on a rule through Set-NetFirewallRule. Linux has no
+// such flag on two of its three backends, so the same button runs a
+// different operation with a different blast radius — see
+// `linux::apply::Reversibility` and the warning the confirm dialog shows.
+
+/// Snapshot the whole firewall policy before anything is changed.
+#[cfg(not(target_os = "linux"))]
+fn platform_backup(
+    rules: &[RuleInfo],
+    _db_path: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
+    firewall_rules::backup_policy(rules)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_backup(
+    _rules: &[RuleInfo],
+    db_path: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
+    let backend = crate::linux::detect()?
+        .ok_or_else(|| anyhow::anyhow!("no supported Linux firewall backend is active"))?;
+    let db_path = db_path.ok_or_else(|| anyhow::anyhow!("preview mode — nothing to back up"))?;
+    crate::linux::apply::backup(backend, db_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_apply(change: &PlannedChange) -> anyhow::Result<()> {
+    match &change.kind {
+        ChangeKind::Disable => firewall_rules::set_rule_enabled(&change.name, false),
+        ChangeKind::Enable => firewall_rules::set_rule_enabled(&change.name, true),
+        ChangeKind::Profiles { arg, .. } => firewall_rules::set_rule_profiles(&change.name, arg),
     }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_apply(change: &PlannedChange) -> anyhow::Result<()> {
+    let backend = crate::linux::detect()?
+        .ok_or_else(|| anyhow::anyhow!("no supported Linux firewall backend is active"))?;
+    match &change.kind {
+        ChangeKind::Disable => crate::linux::apply::disable(backend, &change.name),
+        // Only rules that exist are listed, and every one of them is live, so
+        // there is nothing to re-enable. Recreating a deleted rule would mean
+        // inventing its definition, which Firebreak will not do.
+        ChangeKind::Enable => Err(anyhow::anyhow!(
+            "re-enabling is not available on {}: a rule that was switched off here was removed, \
+             so restore it from the backup instead",
+            backend.label()
+        )),
+        ChangeKind::Profiles { arg, .. } => {
+            let zones: Vec<String> = arg
+                .split(',')
+                .map(str::trim)
+                .filter(|z| !z.is_empty() && *z != "Any")
+                .map(str::to_string)
+                .collect();
+            crate::linux::apply::set_scopes(backend, &change.name, &zones)
+        }
+    }
+}
+
+// small helpers shared with the paint module
+
+/// Colours and short label for a scope chip.
+///
+/// The three Windows profiles have fixed abbreviations and colours. Anything
+/// else is a backend-supplied scope — a firewalld zone — and gets the neutral
+/// chip with its *own* name. It must not fall back to the "ANY" chip: ANY
+/// means "every scope", so labelling a single zone that way tells the reader
+/// the opposite of the truth.
+pub(crate) fn profile_chip(tag: &str) -> (String, Color32, Color32, Color32) {
+    let owned = |(l, a, b, c): (&'static str, Color32, Color32, Color32)| (l.to_string(), a, b, c);
+    match tag {
+        "Domain" => owned(t::CHIP_DOM()),
+        "Private" => owned(t::CHIP_PRV()),
+        "Public" => owned(t::CHIP_PUB()),
+        "Any" => owned(t::CHIP_ANY()),
+        zone => {
+            let (_, fg, bg, border) = t::CHIP_ANY();
+            (abbreviate_scope(zone), fg, bg, border)
+        }
+    }
+}
+
+/// Zone names are user-chosen and can be long; the chip is small. Keep it
+/// recognisable rather than complete — the full name is in the rule's own
+/// display name and in the scope filter row.
+fn abbreviate_scope(zone: &str) -> String {
+    const MAX: usize = 10;
+    let upper: String = zone.to_uppercase();
+    if upper.chars().count() <= MAX {
+        return upper;
+    }
+    upper.chars().take(MAX - 1).collect::<String>() + "\u{2026}"
 }
 
 pub(crate) use helpers::*;
@@ -1303,13 +1419,7 @@ mod helpers {
         editable: bool,
         id_src: (usize, u8),
     ) -> (f32, Option<egui::Response>) {
-        let (label, fg, bg, border) = profile_chip(match tag {
-            "Domain" => "Domain",
-            "Private" => "Private",
-            "Public" => "Public",
-            _ => "Any",
-        });
-        let short = &label; // DOM/PRV/PUB from profile_chip
+        let (short, fg, bg, border) = profile_chip(tag);
         let font = t::semibold(9.5);
         let (fg, bg, border) = if kept {
             (fg, bg, border)

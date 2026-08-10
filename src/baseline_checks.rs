@@ -92,6 +92,19 @@ const CHECKS: &[Check] = &[
 
 pub fn flags_for(rule: &RuleInfo) -> Vec<BaselineFlag> {
     let mut out = Vec::new();
+
+    // A rule applied by Group Policy or another management system is not
+    // this machine's to change: switching it off here lasts until the next
+    // policy refresh puts it back. Saying so stops someone "fixing" the same
+    // rule every week and wondering why it returns.
+    if rule.is_managed() {
+        out.push(BaselineFlag {
+            title: "Managed centrally",
+            advice: "This rule comes from Group Policy or device management, not from this \
+                     machine. Disabling it here is undone at the next policy refresh — change \
+                     it where it is defined.",
+        });
+    }
     let name = rule.display_name.to_lowercase();
     let group = rule.group.as_deref().unwrap_or("").to_lowercase();
     let inbound = rule.direction.eq_ignore_ascii_case("inbound");
@@ -133,13 +146,94 @@ pub fn flags_for(rule: &RuleInfo) -> Vec<BaselineFlag> {
             title: "Broad inbound allow",
             advice: "Inbound allow with no program and no port restriction — vet scope (RemoteAddress, profile) or tighten.",
         });
+    } else if inbound && rule.is_enabled() && rule.action.eq_ignore_ascii_case("allow") {
+        // A rule *with* a port restriction can still be enormous. Fedora
+        // Workstation ships 1025-65535/tcp open by default: 64,511 ports,
+        // which the "no port restriction" test above sails straight past
+        // while being the broadest rule on the host.
+        if let Some(spec) = rule.local_port.as_deref() {
+            let span = port_span(spec);
+            if span > WIDE_PORT_SPAN {
+                out.push(BaselineFlag {
+                    title: "Very wide port range",
+                    advice: "This inbound allow covers thousands of ports, so anything that binds \
+                             one of them is reachable — check the Listening column for what is \
+                             actually behind it, and narrow the range if you can.",
+                });
+            }
+        }
     }
     out
+}
+
+/// More ports than any single service needs. Chosen to sit just above the
+/// privileged range so "all high ports" trips it and a legitimate multi-port
+/// service does not.
+const WIDE_PORT_SPAN: u32 = 1024;
+
+/// Total number of ports a rule's port spec admits.
+fn port_span(spec: &str) -> u32 {
+    crate::listeners::parse_port_ranges(spec)
+        .iter()
+        .map(|(a, b)| b.saturating_sub(*a).saturating_add(1))
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wide_rule(port: &str) -> RuleInfo {
+        RuleInfo {
+            name: "r".into(),
+            display_name: "r".into(),
+            description: None,
+            enabled: "True".into(),
+            direction: "Inbound".into(),
+            action: "Allow".into(),
+            profile: "Any".into(),
+            group: None,
+            program: None,
+            protocol: Some("tcp".into()),
+            local_port: Some(port.into()),
+            remote_port: None,
+            service: None,
+            remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
+        }
+    }
+
+    #[test]
+    fn a_huge_port_range_is_flagged_even_though_it_is_a_restriction() {
+        // Fedora Workstation's default. The "no port restriction" test does
+        // not fire here, so without this the broadest rule on the host is
+        // the one rule nothing flags.
+        let flags = flags_for(&wide_rule("1025-65535"));
+        assert!(
+            flags.iter().any(|f| f.title == "Very wide port range"),
+            "{flags:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_multi_port_service_is_not_flagged() {
+        for spec in ["80,443", "137,138,139", "8000-8080", "22"] {
+            let flags = flags_for(&wide_rule(spec));
+            assert!(
+                !flags.iter().any(|f| f.title == "Very wide port range"),
+                "{spec} should not be flagged: {flags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn port_spans_are_counted_across_ranges_and_lists() {
+        assert_eq!(port_span("22"), 1);
+        assert_eq!(port_span("80,443"), 2);
+        assert_eq!(port_span("1025-65535"), 64511);
+        assert_eq!(port_span("RPC"), 0);
+    }
 
     fn rule(
         display: &str,
@@ -164,6 +258,8 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 

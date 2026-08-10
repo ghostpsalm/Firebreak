@@ -321,6 +321,8 @@ mod tests {
             remote_port: rport.map(Into::into),
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 

@@ -7,6 +7,8 @@ use chrono::Utc;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[cfg(windows)]
+use crate::filter_map;
 use crate::listeners::{self, Listener};
 use crate::model::RuleUsage;
 use crate::store::Store;
@@ -16,10 +18,12 @@ pub fn now_iso() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
-/// Full version: major.minor.patch.build (build = git commit count, set at
-/// compile time). e.g. "0.5.3.412".
+/// The build's version: major.minor.patch, e.g. "0.7.12". The patch
+/// component is the release counter and simply goes up; there is no
+/// separate build number, so what the app reports is exactly what the
+/// Cargo manifest and the release tag say.
 pub fn version_string() -> String {
-    format!("{}.{}", env!("CARGO_PKG_VERSION"), env!("FIREBREAK_BUILD"))
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 pub fn hostname() -> String {
@@ -129,7 +133,7 @@ pub fn default_csv_name() -> String {
 /// Export every rule row (as currently analyzed) to CSV at `path`.
 pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
     let mut out = String::new();
-    out.push_str("Rule,DisplayName,Direction,Action,Profiles,Scope,Enabled,Allow,Block,Domain(A/B),Private(A/B),Public(A/B),LastSeen,DistinctPeers,AppsObserved,ListeningNow\n");
+    out.push_str("Rule,DisplayName,Direction,Action,Profiles,Scope,Source,Enabled,Allow,Block,Domain(A/B),Private(A/B),Public(A/B),LastSeen,DistinctPeers,AppsObserved,ListeningNow\n");
     let cell = |s: &str| -> String {
         if s.contains([',', '"', '\n']) {
             format!("\"{}\"", s.replace('"', "\"\""))
@@ -163,6 +167,12 @@ pub fn export_csv(rows: &[ui::RuleRow], path: &Path) -> Result<()> {
             cell(&r.rule.action),
             cell(&r.rule.profile),
             cell(&listeners::scope_summary(&r.rule)),
+            // where the rule came from: a centrally-managed rule cannot be
+            // changed here for long, which matters when acting on the export
+            cell(&match r.rule.policy_source.as_deref() {
+                Some(src) if !src.is_empty() => format!("{} ({src})", r.rule.source_label()),
+                _ => r.rule.source_label().to_string(),
+            }),
             cell(if r.rule.is_enabled() { "True" } else { "False" }),
             allow.to_string(),
             block.to_string(),
@@ -401,6 +411,25 @@ pub fn enable_collection(db_path: &Path, progress: &dyn Fn(&str)) -> Result<()> 
     Ok(())
 }
 
+/// Everything filtering traffic that is not a firewall rule, as read-only
+/// rows. Defender network protection, VPN clients and third-party security
+/// software enforce through WFP callouts, so their blocks match no rule —
+/// showing them is how a block with no rule behind it gets a name.
+///
+/// Best-effort: enumeration needs elevation and can fail, and a missing list
+/// costs explanations rather than correctness.
+#[cfg(windows)]
+fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
+    filter_map::enumerate_filters()
+        .map(|f| filter_map::pseudo_rules(&f))
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn wfp_pseudo_rules() -> Vec<crate::model::RuleInfo> {
+    Vec::new()
+}
+
 /// Build the report rows from rules + aggregated usage + current listeners.
 /// Usage is looked up by exact InstanceID, else by the DisplayName+direction
 /// group key (profile variants share it).
@@ -453,6 +482,9 @@ fn build_rows(
                 target_enabled,
                 target_scopes,
                 reviewed: review,
+                // Windows ingests events: every rule's traffic is measured,
+                // even when the answer is none.
+                hits_known: true,
             }
         })
         .collect()
@@ -484,6 +516,10 @@ fn build_unmatched(store: &Store) -> Result<Vec<UnmatchedRow>> {
 /// Instant startup: build a result from the cached rule set + whatever the
 /// store already holds, without the (slow) live rule enumeration. Returns
 /// None if there's no cache yet. A full analyze() refresh follows.
+///
+/// Windows-only: on Linux the UI reads counters through `linux::bridge`,
+/// where reading them *is* the fast path and there is nothing to cache.
+#[cfg(not(target_os = "linux"))]
 pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
     let rules = firewall_rules::load_rules_cache()?;
     let store = Store::open(db_path).ok()?;
@@ -510,6 +546,7 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
 
 /// The rule table without any usage data — for the first-run screen before
 /// auditing is enabled (rules + scope + current listeners are still useful).
+#[cfg(not(target_os = "linux"))]
 pub fn rules_only(progress: &dyn Fn(&str)) -> Result<AnalysisResult> {
     progress("Enumerating firewall rules…");
     let rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
@@ -554,8 +591,9 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
 
     let checkpoint = store.checkpoint_record_id()?;
     progress("Loading firewall rules…");
-    let rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
+    let mut rules = firewall_rules::enumerate_rules().context("enumerating firewall rules")?;
     firewall_rules::save_rules_cache(&rules);
+    rules.extend(wfp_pseudo_rules());
     let now = now_iso();
     store.snapshot_rules(&rules, &now)?;
 

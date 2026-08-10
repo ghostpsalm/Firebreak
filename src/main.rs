@@ -40,6 +40,8 @@ struct Args {
     ui_preview: bool,
     restore_audit: bool,
     reset: bool,
+    update: bool,
+    check_update: bool,
     db_path: std::path::PathBuf,
 }
 
@@ -57,6 +59,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
         ui_preview: false,
         restore_audit: false,
         reset: false,
+        update: false,
+        check_update: false,
         db_path: store::default_db_path(),
     };
     let mut it = args_iter.peekable();
@@ -80,6 +84,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--export-support" => args.export_support = true,
             "--ui-preview" => args.ui_preview = true,
             "--restore-audit" => args.restore_audit = true,
+            "--update" => args.update = true,
+            "--check-update" => args.check_update = true,
             "--reset" => args.reset = true,
             "--db" => match it.peek().filter(|p| !p.starts_with("--")) {
                 Some(_) => args.db_path = it.next().unwrap().into(),
@@ -143,6 +149,11 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20                   state, rules, filters, and an event attribution\n\
                      \x20                   probe. Review/redact before sharing.\n\
                      \x20 --ui-preview      open the UI with mock data (no elevation needed).\n\n\
+                     UPDATES (both platforms):\n\
+                     \x20 --check-update    report whether a newer release is published.\n\
+                     \x20 --update          download, verify and install the newest release.\n\
+                     \x20                   The download is checked against the pinned signing\n\
+                     \x20                   key and refused if it does not verify.\n\n\
                      EXAMPLES:\n\
                      \x20 firebreak --enable-only      start collecting on a server, come back\n\
                      \x20                              in a few weeks\n\
@@ -172,6 +183,13 @@ fn main() -> Result<()> {
         return preview::run();
     }
 
+    // Updating is independent of the firewall backend, and on a headless
+    // server the About box is unreachable — so it gets a CLI path on both
+    // platforms rather than being GUI-only.
+    if args.check_update || args.update {
+        return run_update(args.update);
+    }
+
     // On Linux, take the counter-backend path when one of the supported
     // firewall managers is actually in charge. Otherwise fall through to the
     // shared flow, which still serves --ui-preview and reports honestly that
@@ -197,6 +215,31 @@ fn main() -> Result<()> {
     run_windows(args)
 }
 
+/// Check for a newer release and, when asked, install it. The signature gate
+/// lives in `update`, so an unverifiable download is refused here too.
+fn run_update(install: bool) -> Result<()> {
+    let release = update::check()?;
+    println!("Running: {}", release.current);
+    println!("Latest:  {}", release.latest);
+    if !release.newer {
+        println!("Already up to date.");
+        return Ok(());
+    }
+    if !install {
+        println!("A newer release is available. Run --update to install it.");
+        return Ok(());
+    }
+    println!("Downloading and verifying {}…", update::ASSET);
+    let path = update::download_and_install()?;
+    println!(
+        "Installed {} at {}. The previous binary is alongside it as {}.old.",
+        release.latest,
+        path.display(),
+        update::ASSET
+    );
+    Ok(())
+}
+
 /// The Linux run. Deliberately not the Windows flow with substitutions: on
 /// ufw there is no audit policy to enable, no event log to checkpoint and no
 /// collection clock to start, because the kernel is already counting, so the
@@ -210,6 +253,30 @@ fn main() -> Result<()> {
 fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
     // Declare the host's scope vocabulary before anything renders a rule.
     model::set_vocabulary(backend.scope_vocabulary());
+
+    // Windows-only options must say so. Falling through to the window
+    // instead would silently do something the user did not ask for.
+    for (requested, flag, why) in [
+        (
+            args.collect.is_some(),
+            "--collect",
+            "offline bundles carry a Windows .evtx, which has no Linux equivalent",
+        ),
+        (
+            args.dump_filters,
+            "--dump-filters",
+            "there is no WFP filter table on Linux",
+        ),
+        (
+            args.export_support,
+            "--export-support",
+            "the support bundle collects Windows audit state",
+        ),
+    ] {
+        if requested {
+            bail!("{flag} is not available on Linux — {why}");
+        }
+    }
 
     if args.enable_only {
         println!("{}", linux::enable_collection(backend, &args.db_path)?);
@@ -226,11 +293,19 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
         println!("Cleared collected rule usage. Counting restarts from the next run.");
         return Ok(());
     }
-    let prior = store.load_counter_state()?;
-    let (report, next) = linux::analyze(backend, &prior)?;
-    store.save_counter_state(&next)?;
-    print_linux_report(backend, &report);
-    Ok(())
+    if args.no_ui {
+        let prior = store.load_counter_state()?;
+        let (report, next) = linux::analyze(backend, &prior)?;
+        store.save_counter_state(&next)?;
+        print_linux_report(backend, &report);
+        return Ok(());
+    }
+
+    // Default, as on Windows: boot straight to the window. The rule table,
+    // filters, drawer and CSV export are the same ones — only the evidence
+    // behind them differs.
+    drop(store);
+    ui::run_live(args.db_path.clone())
 }
 
 fn run_windows(args: Args) -> Result<()> {

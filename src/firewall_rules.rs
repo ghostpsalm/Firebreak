@@ -6,6 +6,7 @@
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
+#[cfg(not(target_os = "linux"))]
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
@@ -40,6 +41,19 @@ pub(crate) fn run_powershell(script: &str) -> Result<String> {
 /// Enumerate all firewall rules with their program/port filters joined in.
 /// One PowerShell round-trip; the -All filter queries avoid a per-rule
 /// association lookup, which is unusably slow across ~500 rules.
+///
+/// **ActiveStore, not the default.** `Get-NetFirewallRule` with no
+/// `-PolicyStore` returns PersistentStore — local rules only. On a
+/// domain-joined or Intune-managed machine that silently omits every rule
+/// applied by Group Policy and by Windows Service Hardening, so the audit
+/// would report an incomplete firewall and push traffic that matched a
+/// managed rule into the unattributed bucket. ActiveStore is the resultant
+/// set: local + GPO/RSOP + service stores.
+///
+/// `-TracePolicyStore` fills in PolicyStoreSource / PolicyStoreSourceType,
+/// which is how a managed rule is told apart from one an admin made here.
+/// Rules deployed by Intune live in their own MDM store and may still be
+/// absent — see the verification note in docs/internals.md.
 pub fn enumerate_rules() -> Result<Vec<RuleInfo>> {
     let script = r#"
 $ErrorActionPreference = 'Stop'
@@ -57,7 +71,7 @@ $svcs = @{}
 Get-NetFirewallServiceFilter -All | ForEach-Object { $svcs[$_.InstanceID] = [string]$_.Service }
 $addrs = @{}
 Get-NetFirewallAddressFilter -All | ForEach-Object { $addrs[$_.InstanceID] = (@($_.RemoteAddress) -join ',') }
-$out = Get-NetFirewallRule | ForEach-Object {
+$out = Get-NetFirewallRule -PolicyStore ActiveStore -TracePolicyStore | ForEach-Object {
     $p = $ports[$_.InstanceID]
     [pscustomobject]@{
         Name          = $_.Name
@@ -74,6 +88,8 @@ $out = Get-NetFirewallRule | ForEach-Object {
         RemotePort    = $p.RemotePort
         Service       = $svcs[$_.InstanceID]
         RemoteAddress = $addrs[$_.InstanceID]
+        PolicyStoreSource     = [string]$_.PolicyStoreSource
+        PolicyStoreSourceType = [string]$_.PolicyStoreSourceType
     }
 }
 ConvertTo-Json -InputObject @($out) -Compress -Depth 3
@@ -135,12 +151,14 @@ pub fn save_rules_cache(rules: &[RuleInfo]) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub fn load_rules_cache() -> Option<Vec<RuleInfo>> {
     let json = std::fs::read_to_string(rules_cache_path()).ok()?;
     serde_json::from_str(&json).ok()
 }
 
 /// Directory where backups land: %ProgramData%\firebreak\backups
+#[cfg(not(target_os = "linux"))]
 pub fn backup_dir() -> PathBuf {
     let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into());
     Path::new(&base).join("firebreak").join("backups")
@@ -149,6 +167,7 @@ pub fn backup_dir() -> PathBuf {
 /// Export the full firewall policy before any mutation. Produces a
 /// restorable .wfw (netsh advfirewall import) plus a JSON rule dump for
 /// human-readable diffing. Returns the .wfw path.
+#[cfg(not(target_os = "linux"))]
 pub fn backup_policy(rules: &[RuleInfo]) -> Result<PathBuf> {
     let dir = backup_dir();
     crate::secure_dir::ensure_secured_dir(&dir)?;
@@ -174,10 +193,12 @@ pub fn backup_policy(rules: &[RuleInfo]) -> Result<PathBuf> {
 /// Names per Set-NetFirewallRule invocation: keeps the -EncodedCommand
 /// well under the 32,767-char Windows command-line limit even with long
 /// InstanceIDs, so a big batch can't fail wholesale after confirmation.
+#[cfg(not(target_os = "linux"))]
 const RULES_PER_INVOCATION: usize = 100;
 
 /// Enable/disable a single rule by unique Name (InstanceID) — the apply
 /// worker goes rule-by-rule so progress and per-rule failures are exact.
+#[cfg(not(target_os = "linux"))]
 pub fn set_rule_enabled(rule_name: &str, enabled: bool) -> Result<()> {
     set_rules_enabled(std::slice::from_ref(&rule_name.to_string()), enabled)
 }
@@ -186,6 +207,7 @@ pub fn set_rule_enabled(rule_name: &str, enabled: bool) -> Result<()> {
 /// to turn it off for Public. The rule is left enabled (you keep it active
 /// on the remaining profiles). `profile_arg` is a comma-separated set or
 /// "Any". Backup first — the UI's Apply flow does.
+#[cfg(not(target_os = "linux"))]
 pub fn set_rule_profiles(rule_name: &str, profile_arg: &str) -> Result<()> {
     let name = rule_name.replace('\'', "''");
     // profile_arg is a controlled token set (Any / Domain,Private,Public
@@ -213,6 +235,7 @@ Set-NetFirewallRule -Name '{name}' -Profile {prof} -Enabled True
 /// Enable/disable rules by unique Name (InstanceID). Backup first — this
 /// module doesn't do it for you; the UI's Apply flow does. On error,
 /// reports how many rules had already been applied.
+#[cfg(not(target_os = "linux"))]
 pub fn set_rules_enabled(rule_names: &[String], enabled: bool) -> Result<()> {
     let value = if enabled { "True" } else { "False" };
     let mut applied = 0usize;

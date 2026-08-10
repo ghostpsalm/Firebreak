@@ -20,7 +20,9 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
         FwpmEngineClose0, FwpmEngineOpen0, FwpmFilterCreateEnumHandle0,
-        FwpmFilterDestroyEnumHandle0, FwpmFilterEnum0, FwpmFreeMemory0, FWPM_FILTER0,
+        FwpmFilterDestroyEnumHandle0, FwpmFilterEnum0, FwpmFreeMemory0,
+        FwpmProviderCreateEnumHandle0, FwpmProviderDestroyEnumHandle0, FwpmProviderEnum0,
+        FWPM_FILTER0, FWPM_PROVIDER0,
     };
 
     const RPC_C_AUTHN_WINNT: u32 = 10;
@@ -38,6 +40,37 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
         let err = FwpmEngineOpen0(PCWSTR::null(), RPC_C_AUTHN_WINNT, None, None, &mut engine);
         if err != 0 {
             bail!("FwpmEngineOpen0 failed with error {err} (needs elevation)");
+        }
+
+        // provider GUID -> display name, so a filter can say who owns it
+        // rather than showing a raw GUID. Built once per enumeration.
+        let mut providers: HashMap<String, String> = HashMap::new();
+        {
+            let mut ph = HANDLE::default();
+            if FwpmProviderCreateEnumHandle0(engine, None, &mut ph) == 0 {
+                loop {
+                    let mut entries: *mut *mut FWPM_PROVIDER0 = std::ptr::null_mut();
+                    let mut returned: u32 = 0;
+                    if FwpmProviderEnum0(engine, ph, 512, &mut entries, &mut returned) != 0 {
+                        break;
+                    }
+                    if returned == 0 {
+                        if !entries.is_null() {
+                            FwpmFreeMemory0(&mut entries as *mut _ as *mut *mut core::ffi::c_void);
+                        }
+                        break;
+                    }
+                    for i in 0..returned as usize {
+                        let p = &**entries.add(i);
+                        providers.insert(
+                            format!("{:?}", p.providerKey),
+                            pwstr_to_string(p.displayData.name),
+                        );
+                    }
+                    FwpmFreeMemory0(&mut entries as *mut _ as *mut *mut core::ffi::c_void);
+                }
+                let _ = FwpmProviderDestroyEnumHandle0(engine, ph);
+            }
         }
 
         let result = (|| -> Result<Vec<FilterInfo>> {
@@ -76,7 +109,17 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
                             )
                         };
                     let (pd_utf16, pd_hex) = decode_provider_data(provider_data);
+                    // providerKey is optional; a null pointer means the
+                    // filter was created without one (many built-ins).
+                    let provider_key = if f.providerKey.is_null() {
+                        String::new()
+                    } else {
+                        format!("{:?}", *f.providerKey)
+                    };
+                    let provider_name = providers.get(&provider_key).cloned().unwrap_or_default();
                     out.push(FilterInfo {
+                        provider_key: provider_key.clone(),
+                        provider_name,
                         filter_id: f.filterId,
                         name: pwstr_to_string(f.displayData.name),
                         description: pwstr_to_string(f.displayData.description),
@@ -238,6 +281,8 @@ mod tests {
             provider_data_hex: String::new(),
             provider_context_key: String::new(),
             layer_key: String::new(),
+            provider_key: String::new(),
+            provider_name: String::new(),
         }
     }
 
@@ -257,6 +302,8 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 
@@ -312,5 +359,142 @@ mod tests {
         );
         assert_eq!(map[&21].0, "{id-3}");
         assert_eq!(map[&21].1, MappedVia::DisplayName);
+    }
+}
+
+/// Providers whose filters *are* Windows Firewall rules. Their filters are
+/// already represented in the rule table, so surfacing them again as
+/// pseudo-rules would double-count.
+#[cfg(any(windows, test))]
+const FIREWALL_PROVIDER_HINTS: [&str; 3] = ["firewall", "mpssvc", "windows defender firewall"];
+
+/// Is this filter one the Windows Firewall itself created?
+#[cfg(any(windows, test))]
+pub fn is_firewall_provider(provider_name: &str) -> bool {
+    let lc = provider_name.to_lowercase();
+    FIREWALL_PROVIDER_HINTS.iter().any(|h| lc.contains(h))
+}
+
+/// Turn the live filter table into read-only pseudo-rules for everything
+/// filtering traffic that is *not* a Windows Firewall rule.
+///
+/// The point is to explain blocks the rule table cannot. Microsoft Defender
+/// for Endpoint's network protection, VPN clients and third-party security
+/// software all enforce through WFP callouts rather than firewall rules, so
+/// traffic they drop matches no rule and lands in the unattributed bucket
+/// with nothing to name it.
+///
+/// Filters are collapsed by (provider, filter name): a host has thousands of
+/// WFP filters but only a handful of distinct things doing the filtering, and
+/// a table with one row per filter would bury the firewall rules it exists to
+/// show. Filters with no provider are dropped — those are OS plumbing, not
+/// somebody's security product.
+#[cfg(any(windows, test))]
+pub fn pseudo_rules(filters: &[FilterInfo]) -> Vec<RuleInfo> {
+    let mut seen: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for f in filters {
+        if f.provider_name.is_empty() || is_firewall_provider(&f.provider_name) {
+            continue;
+        }
+        *seen
+            .entry((f.provider_name.clone(), f.name.clone()))
+            .or_insert(0) += 1;
+    }
+    seen.into_iter()
+        .map(|((provider, name), count)| {
+            let display = if name.is_empty() {
+                provider.clone()
+            } else {
+                name
+            };
+            RuleInfo {
+                name: format!("wfp:{provider}:{display}"),
+                display_name: display,
+                description: Some(format!(
+                    "{count} live WFP filter(s) from {provider}. Not a firewall rule — it can \
+                     allow or block traffic that no firewall rule explains."
+                )),
+                enabled: "True".into(),
+                direction: "Any".into(),
+                action: "Filter".into(),
+                profile: "Any".into(),
+                group: Some(provider.clone()),
+                program: None,
+                protocol: None,
+                local_port: None,
+                remote_port: None,
+                service: None,
+                remote_address: None,
+                policy_source: Some(provider),
+                policy_source_type: Some(RuleInfo::SOURCE_TYPE_WFP.into()),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod pseudo_tests {
+    use super::*;
+
+    fn filter(name: &str, provider: &str) -> FilterInfo {
+        FilterInfo {
+            filter_id: 1,
+            name: name.into(),
+            description: String::new(),
+            provider_data_utf16: String::new(),
+            provider_data_hex: String::new(),
+            provider_context_key: String::new(),
+            layer_key: String::new(),
+            provider_key: format!("{{{provider}}}"),
+            provider_name: provider.into(),
+        }
+    }
+
+    #[test]
+    fn firewall_filters_are_not_duplicated_as_pseudo_rules() {
+        // They are already in the rule table; showing them twice would make
+        // the same rule look like two separate things filtering traffic.
+        let f = vec![
+            filter("Block inbound", "Microsoft Windows Defender Firewall"),
+            filter("x", "MPSSVC"),
+        ];
+        assert!(pseudo_rules(&f).is_empty());
+    }
+
+    #[test]
+    fn other_security_products_become_read_only_rows() {
+        let f = vec![filter(
+            "Network Protection",
+            "Microsoft Defender for Endpoint",
+        )];
+        let rules = pseudo_rules(&f);
+        assert_eq!(rules.len(), 1);
+        let r = &rules[0];
+        assert_eq!(r.source(), crate::model::RuleSource::WfpFilter);
+        assert!(!r.is_editable(), "a WFP filter has no rule to edit");
+        assert_eq!(r.source_label(), "Microsoft Defender for Endpoint");
+        assert!(r.source_detail().contains("Not a firewall rule"));
+    }
+
+    #[test]
+    fn thousands_of_filters_collapse_to_the_things_doing_the_filtering() {
+        // A real host has thousands of WFP filters. One row each would bury
+        // the firewall rules the table exists to show.
+        let mut f = Vec::new();
+        for _ in 0..500 {
+            f.push(filter("Network Protection", "Defender"));
+            f.push(filter("Tunnel", "SomeVPN"));
+        }
+        let rules = pseudo_rules(&f);
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].description.as_ref().unwrap().contains("500"));
+    }
+
+    #[test]
+    fn filters_without_a_provider_are_os_plumbing_and_are_dropped() {
+        let mut f = filter("Boot time default", "");
+        f.provider_key = String::new();
+        assert!(pseudo_rules(&[f]).is_empty());
     }
 }

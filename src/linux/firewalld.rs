@@ -87,6 +87,9 @@ impl FwdRule {
             remote_port: None,
             service: (self.kind == "service").then(|| self.label.clone()),
             remote_address: None,
+            // Linux has no policy store; the owning manager is the source.
+            policy_source: Some("firewalld".into()),
+            policy_source_type: Some(crate::model::RuleInfo::SOURCE_TYPE_PLATFORM.into()),
         }
     }
 }

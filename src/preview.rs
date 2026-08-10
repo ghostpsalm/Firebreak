@@ -46,6 +46,10 @@ fn rule(
         remote_port: None,
         service: service.map(Into::into),
         remote_address: Some("any".into()),
+        // one mock rule carries a Group Policy origin so the managed-rule
+        // treatment is visible in --ui-preview
+        policy_source: (id == "a2").then(|| "Corp-Baseline-Firewall".to_string()),
+        policy_source_type: Some(if id == "a2" { "GroupPolicy" } else { "Local" }.to_string()),
     }
 }
 
@@ -67,6 +71,12 @@ fn usage(id: &str, allow: i64, block: i64, last_min_ago: i64, apps: &[(&str, i64
 
 #[allow(clippy::type_complexity)]
 pub fn run() -> Result<()> {
+    // The fixtures are Windows rules, so the preview must use Windows'
+    // vocabulary whatever host it runs on. Without this a Linux build shows
+    // the mock data with no scope chips at all — the profile column silently
+    // empties, which is exactly what the preview exists to let you review.
+    crate::model::set_vocabulary(crate::model::ScopeVocabulary::windows_profiles());
+
     // (rule, usage, apps, pending_target) — mirrors the design's `raw` fixture
     let specs: Vec<(RuleInfo, Option<RuleUsage>, Vec<&str>, Option<bool>)> = vec![
         (
@@ -416,6 +426,7 @@ pub fn run() -> Result<()> {
                 target_enabled,
                 target_scopes,
                 reviewed,
+                hits_known: true,
             }
         })
         .collect();

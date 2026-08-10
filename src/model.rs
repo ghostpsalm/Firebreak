@@ -33,6 +33,120 @@ pub struct RuleInfo {
     pub service: Option<String>,
     #[serde(rename = "RemoteAddress", default)]
     pub remote_address: Option<String>,
+    /// Where the rule came from — a GPO name, or empty for a local rule.
+    /// Windows only; populated by -TracePolicyStore.
+    #[serde(rename = "PolicyStoreSource", default)]
+    pub policy_source: Option<String>,
+    /// Local / GroupPolicy / Dynamic / Generated / Hardcoded. A rule that is
+    /// not Local was applied by policy, so disabling it here is temporary —
+    /// the next policy refresh puts it back.
+    #[serde(rename = "PolicyStoreSourceType", default)]
+    pub policy_source_type: Option<String>,
+}
+
+/// Where a rule is defined — which decides what changing it here achieves,
+/// and whether it can be changed here at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleSource {
+    /// Made on this machine. Fully editable, changes stick.
+    Local,
+    /// From a Group Policy Object. Editable, but a policy refresh puts it
+    /// back — so a local change is temporary, not a fix.
+    GroupPolicy,
+    /// Deployed by Intune or another MDM. Same caveat as Group Policy.
+    Mdm,
+    /// Windows Service Hardening. Ships with the OS and is not a user rule.
+    ServiceHardening,
+    /// The Linux firewall manager that owns the rule (ufw / firewalld /
+    /// nftables). Editable through that manager, which is what Apply does.
+    Platform,
+    /// A Windows Filtering Platform filter that is *not* a firewall rule —
+    /// Defender network protection, a VPN client, third-party security
+    /// software. It filters traffic but no firewall rule describes it, so it
+    /// is shown to explain blocks and can never be edited from here.
+    WfpFilter,
+}
+
+impl RuleInfo {
+    /// Synthetic `policy_source_type` marking a rule that came from a
+    /// non-firewall WFP filter rather than the rule store.
+    pub const SOURCE_TYPE_WFP: &'static str = "WfpFilter";
+    /// Synthetic marker for a Linux backend's own rules.
+    pub const SOURCE_TYPE_PLATFORM: &'static str = "Platform";
+
+    pub fn source(&self) -> RuleSource {
+        match self.policy_source_type.as_deref().unwrap_or("") {
+            t if t.eq_ignore_ascii_case(Self::SOURCE_TYPE_WFP) => RuleSource::WfpFilter,
+            t if t.eq_ignore_ascii_case(Self::SOURCE_TYPE_PLATFORM) => RuleSource::Platform,
+            t if t.eq_ignore_ascii_case("GroupPolicy") => RuleSource::GroupPolicy,
+            t if t.eq_ignore_ascii_case("MDM") => RuleSource::Mdm,
+            // Windows reports service-hardening rules under several names;
+            // none of them is something a user authored.
+            "StaticServiceStore" | "ConfigurableServiceStore" | "Hardcoded" | "Generated" => {
+                RuleSource::ServiceHardening
+            }
+            _ => RuleSource::Local,
+        }
+    }
+
+    /// True when the rule is defined somewhere else, so switching it off
+    /// here lasts only until the next policy refresh. Deliberately false for
+    /// Platform: a ufw rule is managed by ufw, but Apply really does change
+    /// it, and warning about a refresh that never comes would be noise.
+    pub fn is_managed(&self) -> bool {
+        matches!(self.source(), RuleSource::GroupPolicy | RuleSource::Mdm)
+    }
+
+    /// Whether Firebreak can change this rule at all. A WFP filter is
+    /// something else's enforcement showing through; there is no rule to
+    /// edit, so it must never present a checkbox.
+    pub fn is_editable(&self) -> bool {
+        self.source() != RuleSource::WfpFilter
+    }
+
+    /// Short label for the Source column.
+    pub fn source_label(&self) -> String {
+        match self.source() {
+            RuleSource::Local => "Local".into(),
+            RuleSource::GroupPolicy => "Group Policy".into(),
+            RuleSource::Mdm => "Intune/MDM".into(),
+            RuleSource::ServiceHardening => "Service hardening".into(),
+            // the owning subsystem is the useful part: "ufw", "firewalld"
+            RuleSource::Platform | RuleSource::WfpFilter => self
+                .policy_source
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Kernel".into()),
+        }
+    }
+
+    /// Longer explanation for the detail panel and tooltips.
+    pub fn source_detail(&self) -> String {
+        match self.source() {
+            RuleSource::Local => "Created on this machine.".into(),
+            RuleSource::GroupPolicy => format!(
+                "Applied by Group Policy{}. Disabling it here is undone at the next policy \
+                 refresh — change it where it is defined.",
+                self.policy_source
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default()
+            ),
+            RuleSource::Mdm => "Deployed by Intune or another MDM. Disabling it here is undone \
+                 at the next policy sync."
+                .into(),
+            RuleSource::ServiceHardening => {
+                "A Windows Service Hardening rule that ships with the OS.".into()
+            }
+            RuleSource::Platform => format!("Managed by {}.", self.source_label()),
+            RuleSource::WfpFilter => format!(
+                "Not a firewall rule: a {} packet filter. It can block or permit traffic that \
+                 no firewall rule explains, and Firebreak cannot change it.",
+                self.source_label()
+            ),
+        }
+    }
 }
 
 impl RuleInfo {
@@ -300,6 +414,12 @@ pub struct FilterInfo {
     pub provider_data_hex: String,
     pub provider_context_key: String,
     pub layer_key: String,
+    /// The filter's provider GUID as a string, or empty when it has none.
+    /// This is how a Windows Firewall filter is told apart from Defender
+    /// network protection, a VPN client, or third-party security software.
+    pub provider_key: String,
+    /// The provider's display name, resolved from the provider table.
+    pub provider_name: String,
 }
 
 /// Aggregated usage for one rule (or one unmatched filter), as read back
@@ -348,11 +468,36 @@ mod tests {
             remote_port: None,
             service: None,
             remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
         }
     }
 
     fn sel(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_group_policy_rule_is_recognised_as_managed() {
+        // Disabling a centrally-managed rule lasts until the next policy
+        // refresh. Treating it as local is how someone ends up "fixing" the
+        // same rule every week.
+        let mut r = rule_with_profile("Any");
+        r.policy_source_type = Some("GroupPolicy".into());
+        r.policy_source = Some("Corp-Baseline".into());
+        assert!(r.is_managed());
+        assert_eq!(r.source_label(), "Group Policy");
+    }
+
+    #[test]
+    fn a_local_rule_is_not_managed() {
+        let mut r = rule_with_profile("Any");
+        assert!(!r.is_managed(), "no policy info means local");
+        assert_eq!(r.source_label(), "Local");
+        r.policy_source_type = Some("Local".into());
+        assert!(!r.is_managed());
+        r.policy_source_type = Some(String::new());
+        assert!(!r.is_managed(), "an empty type is not a management system");
     }
 
     #[test]

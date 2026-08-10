@@ -56,7 +56,15 @@ Four things to know before touching them:
   unparseable tuples and counter-less nft rules are reported in their own
   section. Folding them into the zero-hit list would invite deleting a
   load-bearing rule.
-- **Raw nftables is the only backend that edits the user's rules.** Adding a
+- **"Disable" does not mean the same thing on every backend.** Windows sets
+  a flag the rule survives; firewalld removes a service/port from a zone and
+  can add it back; **ufw and nftables have no off switch at all, so disabling
+  deletes the rule.** `linux::apply::Reversibility` carries that to the
+  confirm dialog — a dialog saying "disable" over a deletion is how someone
+  loses a rule they meant to keep. Apply always writes a full config backup
+  first and re-reads afterwards to confirm the rule actually went.
+- **Raw nftables is the only backend that edits the user's rules** for
+  *collection*. Adding a
   counter takes the kernel's own JSON expression and inserts
   `{"counter": null}` before the verdict — never re-derived from text — after
   a full ruleset backup, and every touched rule is re-read and verified to be
