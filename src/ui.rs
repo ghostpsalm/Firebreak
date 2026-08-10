@@ -1312,9 +1312,14 @@ impl eframe::App for App {
 
 // ---- entry points ----
 
+/// The application icon, embedded once and used twice: as the window's own
+/// icon here, and as the file the Linux icon theme needs when a desktop
+/// entry is installed (see [`crate::desktop`]).
+pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/firebreak-256.png");
+
 fn app_icon() -> egui::IconData {
     // 256px PNG embedded in the binary; decoded to RGBA for the window icon
-    let bytes = include_bytes!("../assets/icons/firebreak-256.png");
+    let bytes = APP_ICON_PNG;
     match image_rgba(bytes) {
         Some((rgba, w, h)) => egui::IconData {
             rgba,

@@ -6,6 +6,7 @@ mod baseline_checks;
 mod collect;
 mod console;
 mod default_policy;
+mod desktop;
 mod elevation;
 mod event_query;
 mod filter_map;
@@ -43,6 +44,7 @@ struct Args {
     reset: bool,
     update: bool,
     check_update: bool,
+    install_desktop: bool,
     db_path: std::path::PathBuf,
 }
 
@@ -62,6 +64,7 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
         reset: false,
         update: false,
         check_update: false,
+        install_desktop: false,
         db_path: store::default_db_path(),
     };
     let mut it = args_iter.peekable();
@@ -87,6 +90,7 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--restore-audit" => args.restore_audit = true,
             "--update" => args.update = true,
             "--check-update" => args.check_update = true,
+            "--install-desktop" => args.install_desktop = true,
             "--reset" => args.reset = true,
             "--db" => match it.peek().filter(|p| !p.starts_with("--")) {
                 Some(_) => args.db_path = it.next().unwrap().into(),
@@ -151,6 +155,11 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20                   state, rules, filters, and an event attribution\n\
                      \x20                   probe. Review/redact before sharing.\n\
                      \x20 --ui-preview      open the UI with mock data (no elevation needed).\n\n\
+                     DESKTOP (Linux):\n\
+                     \x20 --install-desktop install a desktop entry so Firebreak can be started\n\
+                     \x20                   from the application menu. It asks for authorisation\n\
+                     \x20                   at launch (pkexec) because the audit needs root.\n\
+                     \x20                   Run it once, as root, from wherever the binary lives.\n\n\
                      UPDATES (both platforms):\n\
                      \x20 --check-update    report whether a newer release is published.\n\
                      \x20 --update          download, verify and install the newest release.\n\
@@ -207,8 +216,16 @@ fn main() -> Result<()> {
             bail!(
                 "firebreak must run as root on Linux — the firewall's rule files, its packet \
                  counters and /proc process attribution are all root-only. Re-run with sudo, \
-                 or use --ui-preview to look at the interface unprivileged."
+                 or use --ui-preview to look at the interface unprivileged.\nTo start it from \
+                 the desktop instead, run `sudo firebreak --install-desktop` once."
             );
+        }
+        // Writes under /usr, so it belongs after the root check and before
+        // anything that needs a firewall backend — installing a launcher is
+        // useful on a host Firebreak cannot yet audit.
+        if args.install_desktop {
+            println!("{}", desktop::install()?);
+            return Ok(());
         }
         if let Some(backend) = linux::detect()? {
             return run_linux(&args, backend);
