@@ -125,6 +125,20 @@ apply is in flight: `absorb` replaces every row and clears the selection, so
 refreshing then would discard the user's work. Windows has no auto-refresh —
 a refresh there re-ingests the Security log.
 
+## Dialogs
+
+About and Updates are the same 360px modal in two states — one `scrim` +
+`dialog_window` + `indented` helper set in `ui/paint.rs`, so they cannot
+drift apart. Updates is its own window rather than a strip inside About
+because an update is a task with a course to run (check → download → verify
+→ install → restart) and each state has something to say; About only says
+what the build is, and links across.
+
+The progress bar is drawn only when the transfer's size is actually known —
+`Content-Length` on Windows, a HEAD probe on Linux. Unknown size gets a
+sweeping indeterminate block, never a filled bar, because a bar that reads
+"done" while bytes are still arriving is worse than no bar.
+
 ## Conventions
 
 - **Commits**: short imperative summary line, no period, occasionally with
