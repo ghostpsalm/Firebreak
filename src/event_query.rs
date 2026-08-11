@@ -289,8 +289,12 @@ pub fn newest_record_id() -> Result<Option<u64>> {
 }
 
 /// Direction tokens in 5156/5157 EventData: `%%14592` = Inbound,
-/// `%%14593` = Outbound. These are message-table constants, and the mapping
-/// is the one Microsoft documents for both event ids.
+/// `%%14593` = Outbound.
+///
+/// Corroborated from documentation, not from a live capture: Microsoft's
+/// event 5156 schema, plus two independent DFIR token references. `%%`
+/// tokens are static message-table resources, so they do not vary per
+/// install. Pinned by `decodes_direction_tokens_and_passes_unknown_through`.
 ///
 /// It is load-bearing — direction drives scope attribution and the Dir
 /// column — and an inversion would be silent, so it is not left resting on
@@ -468,6 +472,24 @@ pub fn parse_event_xml(xml: &str) -> Option<EventRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pins the 5156/5157 Direction token mapping (issue #9). Pass-through
+    /// of anything else is the documented contract on
+    /// `EventRecord::direction`: "Inbound" / "Outbound" / the raw token if
+    /// unrecognised. Direction drives scope attribution and the Dir column,
+    /// so an inversion here would be invisible and total.
+    #[test]
+    fn decodes_direction_tokens_and_passes_unknown_through() {
+        assert_eq!(decode_direction("%%14592"), "Inbound");
+        assert_eq!(decode_direction("%%14593"), "Outbound");
+        // %%14611 is a real token from the same EventData (LayerName) and
+        // %%14594 is an adjacent unclaimed one: neither is a direction, so
+        // neither may be translated.
+        assert_eq!(decode_direction("%%14611"), "%%14611");
+        assert_eq!(decode_direction("%%14594"), "%%14594");
+        // an absent field stays empty rather than defaulting to a direction
+        assert_eq!(decode_direction(""), "");
+    }
 
     /// The cross-check for issue #9. It must only speak where the port shape
     /// is unambiguous — a check that guesses cannot be evidence about the
