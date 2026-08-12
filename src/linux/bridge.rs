@@ -52,7 +52,13 @@ pub fn rules_only(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisRes
     let reviewed = crate::store::Store::open(db_path)
         .and_then(|s| s.load_reviewed())
         .unwrap_or_default();
-    Ok(to_result(backend, report, false, &reviewed))
+    Ok(to_result(
+        backend,
+        report,
+        false,
+        &reviewed,
+        super::default_policy::read(backend),
+    ))
 }
 
 /// A full run: read counters, fold them into the running totals, persist.
@@ -68,7 +74,13 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
     // derived data — it has to survive every refresh, or ticking a rule off
     // appears to work and silently resets on the next read.
     let reviewed = store.load_reviewed().unwrap_or_default();
-    Ok(to_result(backend, report, true, &reviewed))
+    Ok(to_result(
+        backend,
+        report,
+        true,
+        &reviewed,
+        super::default_policy::read(backend),
+    ))
 }
 
 /// Start collecting — installs whatever the backend needs.
@@ -107,7 +119,13 @@ pub fn recount(db_path: &Path) -> Result<AnalysisResult> {
     let (report, next) = super::recount(backend, &prior)?;
     store.save_counter_state(&next)?;
     let reviewed = store.load_reviewed().unwrap_or_default();
-    Ok(to_result(backend, report, true, &reviewed))
+    Ok(to_result(
+        backend,
+        report,
+        true,
+        &reviewed,
+        super::default_policy::read(backend),
+    ))
 }
 
 /// Fold a backend report into the shared result type.
@@ -118,6 +136,7 @@ fn to_result(
     report: super::Report,
     collecting: bool,
     reviewed: &Reviewed,
+    stance: Option<super::default_policy::DefaultInbound>,
 ) -> AnalysisResult {
     let measured: i64 = report.rows.iter().filter_map(|r| r.hits).sum();
     let unmeasurable = report.unmeasurable.len() as u64;
@@ -130,7 +149,6 @@ fn to_result(
         );
     }
 
-    let stance = super::default_policy::read(backend);
     let mut rows = report
         .rows
         .into_iter()
@@ -344,6 +362,7 @@ mod tests {
             report,
             true,
             &Default::default(),
+            None,
         );
         assert_eq!(result.ctx.unmatched_events, 1);
         assert!(
@@ -367,8 +386,34 @@ mod tests {
             report,
             true,
             &Default::default(),
+            None,
         );
         assert_eq!(result.ctx.events_processed, 10);
         assert_eq!(result.rows.len(), 2);
+        assert!(result.ctx.default_inbound.is_none());
+    }
+
+    #[test]
+    fn a_known_default_stance_appends_the_synthetic_row() {
+        let report = super::super::Report {
+            rows: vec![row("a", "Allow", Some(4))],
+            note: None,
+            unmeasurable: vec![],
+        };
+        let result = to_result(
+            super::super::Backend::Ufw,
+            report,
+            true,
+            &Default::default(),
+            Some(super::super::default_policy::DefaultInbound {
+                verdict: crate::default_policy::Verdict::Drop,
+                detail: "DEFAULT_INPUT_POLICY=\"DROP\"".into(),
+            }),
+        );
+        // The synthetic catch-all rides along with the user's rules, and the
+        // totals still count only what the backend actually measured.
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.ctx.events_processed, 4);
+        assert!(result.ctx.default_inbound.is_some());
     }
 }
