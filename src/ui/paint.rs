@@ -222,6 +222,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     if app.phase == Phase::NeedsEnable {
         firstrun_band(app, ctx);
     }
+    review_band(app, ctx);
     filter_bar(app, ctx);
     status_band(app, ctx);
     footer(app, ctx);
@@ -3589,6 +3590,49 @@ fn unattributed_body(app: &App, ui: &mut egui::Ui) {
 }
 
 // ---- footer ----
+
+/// Names the machine whose audit this window is showing.
+///
+/// A review window looks exactly like a live one — same table, same columns,
+/// same numbers — which is precisely why it has to say so. Without this,
+/// someone could read another host's zero-hit rules as their own and go
+/// deleting.
+fn review_band(app: &App, ctx: &egui::Context) {
+    let Some(source) = app.review_source() else {
+        return;
+    };
+    egui::TopBottomPanel::top("review")
+        .frame(
+            egui::Frame::none()
+                .fill(t::ACCENT_TINT())
+                .inner_margin(egui::Margin::symmetric(PAGE, 7.0)),
+        )
+        .show(ctx, |ui| {
+            super::stroke_bottom(
+                ui.painter(),
+                ui.max_rect().expand2(Vec2::new(PAGE, 7.0)),
+                t::ACCENT_TINT_BORDER(),
+            );
+            ui.horizontal_top(|ui| {
+                ui.label(
+                    egui::RichText::new("REVIEWING A BUNDLE")
+                        .font(t::semibold(9.5))
+                        .color(t::ACCENT()),
+                );
+                ui.add_space(10.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "{source} — read-only: nothing here changes this machine's firewall"
+                        ))
+                        .font(t::sans(11.5))
+                        .color(t::INK()),
+                    )
+                    .wrap(),
+                );
+            });
+        });
+}
 
 /// The last action's outcome.
 ///

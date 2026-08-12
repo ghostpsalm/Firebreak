@@ -120,7 +120,7 @@ pub fn row(
     };
     crate::ui::RuleRow {
         target_enabled: true,
-        target_scopes: crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary()),
+        target_scopes: crate::model::ScopeSet::from_rule(&rule, &crate::model::vocabulary()),
         rule,
         usage: None,
         flags: Vec::new(),

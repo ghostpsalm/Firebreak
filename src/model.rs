@@ -246,7 +246,7 @@ impl RuleInfo {
 /// list of zones, of any length. ufw has no such concept at all — every rule
 /// simply applies. Nothing shared can therefore hardcode three names, so the
 /// names are data supplied by whichever backend is in charge.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ScopeVocabulary {
     /// Scope names in display order. Empty = this backend has no scopes.
     pub names: Vec<String>,
@@ -276,22 +276,43 @@ impl ScopeVocabulary {
 /// The host's scope vocabulary. It is a property of the machine Firebreak is
 /// auditing — fixed for the life of the process — so it is set once at
 /// startup rather than threaded through every rule-rendering call.
-static VOCABULARY: std::sync::OnceLock<ScopeVocabulary> = std::sync::OnceLock::new();
+static VOCABULARY: std::sync::RwLock<Option<ScopeVocabulary>> = std::sync::RwLock::new(None);
 
 /// Declare the host's vocabulary. First call wins; later calls are ignored,
 /// so a backend cannot silently redefine scopes mid-run.
 pub fn set_vocabulary(vocab: ScopeVocabulary) {
-    let _ = VOCABULARY.set(vocab);
+    if let Ok(mut slot) = VOCABULARY.write() {
+        if slot.is_none() {
+            *slot = Some(vocab);
+        }
+    }
 }
 
-pub fn vocabulary() -> &'static ScopeVocabulary {
-    VOCABULARY.get_or_init(|| {
-        if cfg!(windows) {
-            ScopeVocabulary::windows_profiles()
-        } else {
-            ScopeVocabulary::none()
+/// Replace the vocabulary outright.
+///
+/// Only review mode calls this, and it must override: a bundle carries the
+/// scopes of the machine it came from, and rendering its rules against *this*
+/// host's zone list would put another firewall's rules under names that do
+/// not describe them — or under no names at all. That is the one case where
+/// redefining scopes mid-run is the correct behaviour rather than the bug
+/// [`set_vocabulary`] guards against.
+pub fn adopt_vocabulary(vocab: ScopeVocabulary) {
+    if let Ok(mut slot) = VOCABULARY.write() {
+        *slot = Some(vocab);
+    }
+}
+
+pub fn vocabulary() -> ScopeVocabulary {
+    if let Ok(slot) = VOCABULARY.read() {
+        if let Some(v) = slot.as_ref() {
+            return v.clone();
         }
-    })
+    }
+    if cfg!(windows) {
+        ScopeVocabulary::windows_profiles()
+    } else {
+        ScopeVocabulary::none()
+    }
 }
 
 /// Which of the host vocabulary's scopes a rule is active in — the editable

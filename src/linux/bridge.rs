@@ -211,7 +211,7 @@ fn row_from(row: super::RuleUsageRow, reviewed: &Reviewed) -> RuleRow {
         distinct_peers: 0,
         by_profile: Vec::new(),
     });
-    let target_scopes = crate::model::ScopeSet::from_rule(&row.rule, crate::model::vocabulary());
+    let target_scopes = crate::model::ScopeSet::from_rule(&row.rule, &crate::model::vocabulary());
     RuleRow {
         flags: crate::baseline_checks::flags_for(&row.rule),
         target_enabled: row.rule.is_enabled(),

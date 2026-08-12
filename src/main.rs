@@ -17,6 +17,7 @@ mod listeners;
 mod model;
 mod pipeline;
 mod preview;
+mod review;
 mod scope;
 mod secure_dir;
 mod store;
@@ -29,7 +30,7 @@ mod update;
 mod winhttp;
 mod winpriv;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use store::Store;
 
@@ -46,6 +47,7 @@ struct Args {
     check_update: bool,
     install_desktop: bool,
     uninstall_desktop: bool,
+    review: Option<std::path::PathBuf>,
     db_path: std::path::PathBuf,
 }
 
@@ -67,6 +69,7 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
         check_update: false,
         install_desktop: false,
         uninstall_desktop: false,
+        review: None,
         db_path: store::default_db_path(),
     };
     let mut it = args_iter.peekable();
@@ -94,6 +97,13 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
             "--check-update" => args.check_update = true,
             "--install-desktop" => args.install_desktop = true,
             "--uninstall-desktop" => args.uninstall_desktop = true,
+            "--review" => match it.peek().filter(|p| !p.starts_with("--")) {
+                Some(_) => args.review = it.next().map(Into::into),
+                None => {
+                    eprintln!("--review requires the path to a bundle (.zip)");
+                    std::process::exit(2);
+                }
+            },
             "--reset" => args.reset = true,
             "--db" => match it.peek().filter(|p| !p.starts_with("--")) {
                 Some(_) => args.db_path = it.next().unwrap().into(),
@@ -123,6 +133,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20           ruleset is backed up first and every edit verified);\n\
                      \x20           --restore-audit puts the ruleset back.\n\
                      \x20 --reset   clear collected totals and start counting over.\n\
+                     \x20 --collect [path]  write a portable audit bundle (rules + the totals\n\
+                     \x20                   counted so far) for review on another machine.\n\
                      \x20 --db      database path (default /var/lib/firebreak/firebreak.db)\n\
                      \x20 The remaining options below are Windows-only.\n\n\
                      ON WINDOWS:\n\
@@ -158,6 +170,11 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20                   state, rules, filters, and an event attribution\n\
                      \x20                   probe. Review/redact before sharing.\n\
                      \x20 --ui-preview      open the UI with mock data (no elevation needed).\n\n\
+                     REVIEW (both platforms):\n\
+                     \x20 --review <path>   open an audit bundle collected elsewhere. Read-only:\n\
+                     \x20                   it describes another machine, so nothing in that\n\
+                     \x20                   window can change this host's firewall. Needs no\n\
+                     \x20                   privileges. Add --no-ui for a text report instead.\n\n\
                      DESKTOP (Linux):\n\
                      \x20 --install-desktop install a desktop entry so Firebreak can be started\n\
                      \x20                   from the application menu. It asks for authorisation\n\
@@ -202,6 +219,25 @@ fn main() -> Result<()> {
     // the old binary alongside the new one, so both have to sweep it — doing
     // this only on Windows left a stale copy on every updated Linux host.
     update::cleanup_old();
+
+    // Reviewing a bundle describes another machine, so it needs neither
+    // this host's firewall nor root — and must not touch either. Handled
+    // before every platform branch for exactly that reason.
+    if let Some(path) = &args.review {
+        let bundle = review::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let source = format!(
+            "{} ({}) collected {}",
+            bundle.manifest.hostname, bundle.manifest.os, bundle.manifest.collected_at
+        );
+        let result = review::to_result(bundle);
+        // A bundle is often reviewed on a box with no display — a server
+        // over SSH. Print it there rather than failing at the window.
+        if args.no_ui {
+            review::print_report(&result, &source);
+            return Ok(());
+        }
+        return ui::run_review(result, source);
+    }
 
     // Updating is independent of the firewall backend, and on a headless
     // server the About box is unreachable — so it gets a CLI path on both
@@ -293,12 +329,24 @@ fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
 
     // Windows-only options must say so. Falling through to the window
     // instead would silently do something the user did not ask for.
+    // --collect is supported on both platforms now, but they ship different
+    // things: Windows hands over a Security log for the reviewer to replay,
+    // Linux hands over the totals it has banked, because a kernel counter is
+    // a gauge and there is no event stream to give.
+    if let Some(path) = &args.collect {
+        let out = path.clone().unwrap_or_else(|| {
+            std::path::PathBuf::from(review::default_name(&pipeline::hostname()))
+        });
+        let written = review::export(&args.db_path, &out)?;
+        println!("Audit bundle written to:\n  {}", written.display());
+        println!(
+            "Open it anywhere — Linux or Windows:  firebreak --review {}",
+            written.display()
+        );
+        return Ok(());
+    }
+
     for (requested, flag, why) in [
-        (
-            args.collect.is_some(),
-            "--collect",
-            "offline bundles carry a Windows .evtx, which has no Linux equivalent",
-        ),
         (
             args.dump_filters,
             "--dump-filters",

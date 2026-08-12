@@ -12,11 +12,9 @@
 //!   rules.json     — Vec<RuleInfo>, exactly the shape enumerate_rules parses
 //!   events.evtx    — Security log filtered to 5156/5157
 
-#[cfg(any(windows, test))]
 use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-#[cfg(any(windows, test))]
 use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,7 +24,6 @@ use crate::model::RuleInfo;
 
 pub const SCHEMA: u32 = 1;
 
-#[cfg(any(windows, test))]
 /// Decompressed-byte ceiling for a bundle's JSON entries. Enforced against
 /// bytes actually read, never against the zip's declared entry size — that
 /// field lives in an attacker-controlled header (issue #8).
@@ -233,20 +230,21 @@ pub fn read_bundle(zip_path: &Path) -> Result<Bundle> {
     })
 }
 
-#[cfg(any(windows, test))]
-#[cfg(any(windows, test))]
-fn read_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
+/// Read a required entry, under the decompressed-size ceiling.
+///
+/// Shared with [`crate::review`]: both bundle readers open a file that came
+/// from another machine, so both go through the same cap rather than one of
+/// them growing its own (issue #8).
+pub(crate) fn read_entry(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
     read_entry_opt(z, name)?.ok_or_else(|| anyhow!("bundle has no {name}"))
 }
 
-#[cfg(any(windows, test))]
 /// An entry that is present but decompresses past [`JSON_ENTRY_CAP`]. Its own
 /// type so a caller with a soft fallback can tell "too big to read at all"
 /// apart from "read, but corrupt" — the first is a refusal, the second isn't.
 #[derive(Debug)]
 struct EntryTooLarge(String);
 
-#[cfg(any(windows, test))]
 impl std::fmt::Display for EntryTooLarge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -258,15 +256,16 @@ impl std::fmt::Display for EntryTooLarge {
     }
 }
 
-#[cfg(any(windows, test))]
 impl std::error::Error for EntryTooLarge {}
 
-#[cfg(any(windows, test))]
 /// `Ok(None)` when the entry simply isn't there; [`EntryTooLarge`] when it is
 /// there but won't fit under [`JSON_ENTRY_CAP`]; any other `Err` when it is
 /// there and unreadable — callers that treat a missing or corrupt entry as
 /// optional must not treat an over-cap one that way.
-fn read_entry_opt(z: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Option<String>> {
+pub(crate) fn read_entry_opt(
+    z: &mut zip::ZipArchive<std::fs::File>,
+    name: &str,
+) -> Result<Option<String>> {
     let Ok(mut e) = z.by_name(name) else {
         return Ok(None);
     };

@@ -125,6 +125,31 @@ apply is in flight: `absorb` replaces every row and clears the selection, so
 refreshing then would discard the user's work. Windows has no auto-refresh —
 a refresh there re-ingests the Security log.
 
+## Portable audit bundles
+
+Two bundle formats, because the two platforms have different evidence to
+hand over. Windows ships a **Security log** (`collect.rs`) for the reviewing
+machine to replay. Linux ships **totals** (`review.rs`) — a kernel counter is
+a gauge, so there is no event stream to give, only what has been banked.
+
+`firebreak --collect [path]` writes one; `firebreak --review <path>` opens it
+on either platform (`--no-ui` prints it instead, for a headless host). The
+reader needs no privileges and never touches the local firewall.
+
+- **Review mode is read-only, and not merely as a courtesy.** A bundle's rule
+  names belong to the machine it came from; Windows names are InstanceIDs, so
+  applying them here could edit a *local* rule that happens to share a name.
+  `App::read_only` blocks apply, enable, stop and reviewed marks, and a band
+  names the source host so a review window is never mistaken for a live one.
+- **The bundle carries its own `ScopeVocabulary`**, and review mode *adopts*
+  it (`model::adopt_vocabulary`) rather than `set_vocabulary`'s first-call-
+  wins, which exists to stop a backend redefining scopes mid-run. Rendering
+  another host's zones against this host's list is the one case where
+  replacing is correct.
+- **Unknown must survive the trip.** A rule the collecting host could not
+  measure travels as `hits: None`, not `0` — zero is the list a reviewer works
+  through deleting things from.
+
 ## Installing
 
 `install/` holds the two one-line installers (`install.sh` for Linux,

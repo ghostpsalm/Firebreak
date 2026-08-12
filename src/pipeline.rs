@@ -293,7 +293,7 @@ fn import_events(
         store.reset_ingestion()?;
     }
 
-    let scope_index = crate::scope::ScopeIndex::build(&rules, crate::model::vocabulary());
+    let scope_index = crate::scope::ScopeIndex::build(&rules, &crate::model::vocabulary());
     let device_map = app_identity::device_path_map();
 
     store.begin()?;
@@ -552,7 +552,7 @@ fn build_rows(
             let listening = listeners::listeners_for_rule(&rule, listener_list);
             let target_enabled = rule.is_enabled();
             let target_scopes =
-                crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary());
+                crate::model::ScopeSet::from_rule(&rule, &crate::model::vocabulary());
             // a review attests to a specific definition: on fingerprint
             // mismatch the mark goes stale and the rule resurfaces
             let review = match reviewed.get(&rule.name) {
@@ -727,7 +727,7 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
     // can credit several overlapping rules — correct for "is this rule
     // exercised". FilterOrigin is used only to label events that match no
     // rule scope (pure default/system traffic) in the Unattributed panel.
-    let scope_index = crate::scope::ScopeIndex::build(&rules, crate::model::vocabulary());
+    let scope_index = crate::scope::ScopeIndex::build(&rules, &crate::model::vocabulary());
     let iface_profiles = firewall_rules::interface_profile_map();
 
     // everything from here to the checkpoint advance is one transaction:

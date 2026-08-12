@@ -89,7 +89,7 @@ impl RuleRow {
         self.rule.source() == crate::model::RuleSource::DefaultPolicy
     }
     fn orig_scopes(&self) -> crate::model::ScopeSet {
-        crate::model::ScopeSet::from_rule(&self.rule, crate::model::vocabulary())
+        crate::model::ScopeSet::from_rule(&self.rule, &crate::model::vocabulary())
     }
     fn pending(&self) -> bool {
         self.target_enabled != self.rule.is_enabled() || self.target_scopes != self.orig_scopes()
@@ -504,6 +504,10 @@ pub struct App {
     /// The Updates dialog. Its own window, not a section of About — see
     /// `paint::update_box`.
     update_open: bool,
+    /// Set when the window is showing a bundle from another machine:
+    /// "<host> (<os>) collected <when>". Its presence is what makes the
+    /// window read-only — see [`App::read_only`].
+    review_source: Option<String>,
     /// Reviewed-mark writes in flight, by rule name.
     review_pending: std::collections::HashSet<String>,
     review_tx: std::sync::mpsc::Sender<ReviewOutcome>,
@@ -593,6 +597,7 @@ impl App {
             settings_open: false,
             about_open: false,
             update_open: false,
+            review_source: None,
             review_pending: std::collections::HashSet::new(),
             review_tx,
             review_rx,
@@ -731,6 +736,9 @@ impl App {
     /// rule's current definition fingerprint; un-reviewing (from either the
     /// reviewed or the stale state) deletes the record.
     pub(crate) fn toggle_reviewed(&mut self, ri: usize) {
+        if self.read_only() {
+            return;
+        }
         let (next, op): (ReviewState, Option<(String, String)>) = {
             let r = &self.rows[ri];
             match r.reviewed {
@@ -776,6 +784,23 @@ impl App {
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// Whether this window may change anything.
+    ///
+    /// False for a reviewed bundle: those rules belong to another machine,
+    /// and their names are that machine's. Applying them here would edit
+    /// *this* host's firewall through names that merely look familiar —
+    /// Windows rule names are InstanceIDs, so a collision is not far-fetched.
+    /// Enabling, stopping and reviewed marks are out for the same reason:
+    /// none of them has anything here to act on.
+    pub(crate) fn read_only(&self) -> bool {
+        self.review_source.is_some()
+    }
+
+    /// The bundle being reviewed, if this is a review window.
+    pub(crate) fn review_source(&self) -> Option<&str> {
+        self.review_source.as_deref()
     }
 
     /// Report the outcome of an action to the user. Every failure path goes
@@ -947,6 +972,9 @@ impl App {
     /// did nothing while the shadow counter table stayed installed. It now
     /// goes through the platform's own stop path and says what happened.
     fn stop_auditing(&mut self, egui_ctx: &egui::Context) {
+        if self.read_only() {
+            return;
+        }
         let Some(db) = self.db_path.clone() else {
             self.report("Preview mode — there is nothing to stop.", false);
             return;
@@ -1190,11 +1218,18 @@ impl App {
         for r in &mut self.rows {
             r.target_enabled = r.rule.is_enabled();
             r.target_scopes =
-                crate::model::ScopeSet::from_rule(&r.rule, crate::model::vocabulary());
+                crate::model::ScopeSet::from_rule(&r.rule, &crate::model::vocabulary());
         }
     }
 
     fn start_apply(&mut self, egui_ctx: &egui::Context) {
+        if self.read_only() {
+            self.report(
+                "This is another machine's audit — Firebreak will not change rules from here.",
+                true,
+            );
+            return;
+        }
         let plan = self.planned_changes();
         if plan.is_empty() {
             return;
@@ -1357,7 +1392,7 @@ impl App {
                 }
                 if !r
                     .rule
-                    .applies_to_scopes(crate::model::vocabulary(), &self.scope_filter_selected())
+                    .applies_to_scopes(&crate::model::vocabulary(), &self.scope_filter_selected())
                 {
                     return false;
                 }
@@ -1544,6 +1579,24 @@ pub fn run_preview(
             Ok(Box::new(App::new_ready(
                 rows, ctx_info, unmatched, listeners,
             )))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+}
+
+/// Open a window on a bundle collected elsewhere. Read-only — see
+/// [`App::read_only`] for why that is not merely a nicety.
+pub fn run_review(result: crate::pipeline::AnalysisResult, source: String) -> anyhow::Result<()> {
+    eframe::run_native(
+        "firebreak",
+        native_options(),
+        Box::new(move |cc| {
+            cc.egui_ctx.set_pixels_per_point(render_scale());
+            t::apply_style(&cc.egui_ctx);
+            let mut app =
+                App::new_ready(result.rows, result.ctx, result.unmatched, result.listeners);
+            app.review_source = Some(source);
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
@@ -1779,7 +1832,7 @@ mod tests {
         .unwrap();
         RuleRow {
             target_enabled: rule.is_enabled(),
-            target_scopes: crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary()),
+            target_scopes: crate::model::ScopeSet::from_rule(&rule, &crate::model::vocabulary()),
             rule,
             usage: None,
             flags: Vec::new(),

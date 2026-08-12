@@ -409,7 +409,7 @@ pub fn run() -> Result<()> {
             let listening = listeners::listeners_for_rule(&rule, &mock_listeners);
             let target_enabled = pending.unwrap_or_else(|| rule.is_enabled());
             let target_scopes =
-                crate::model::ScopeSet::from_rule(&rule, crate::model::vocabulary());
+                crate::model::ScopeSet::from_rule(&rule, &crate::model::vocabulary());
             // demo reviewed states: one verified, one stale (rule changed
             // since it was checked)
             let reviewed = match rule.display_name.as_str() {
