@@ -1,0 +1,179 @@
+#cloud-config
+# Everything the collector needs except the receiver binary itself, which
+# Terraform builds on the box straight afterwards (see null_resource.receiver
+# in main.tf).
+#
+# Note for editors: this file goes through Terraform's `templatefile`, so a
+# bare dollar-brace is an interpolation and gets substituted. To write a
+# literal one for the shell, double the dollar sign: $${HOME}.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - build-essential
+  - pkg-config
+  - curl
+  - sqlite3
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+  - iptables-persistent
+
+# 1 GB is the Always Free AMD shape, and linking the bundled SQLite needs
+# more than that. Swap turns "the build is killed by the OOM reaper" into
+# "the build is slow", which is the right trade for a one-off.
+swap:
+  filename: /swapfile
+  size: 2147483648
+  maxsize: 2147483648
+
+users:
+  - name: firebreak
+    system: true
+    shell: /usr/sbin/nologin
+    # No home, no login, no password. It exists to own one database file.
+    lock_passwd: true
+
+write_files:
+  # ---- the reverse proxy ----
+  #
+  # Structured so a second service is three lines, not a rethink: give it a
+  # path prefix and a loopback port, and add a handle block. Caddy gets and
+  # renews the certificate by itself once DNS points here.
+  - path: /etc/caddy/Caddyfile
+    owner: root:root
+    permissions: '0644'
+    content: |
+      {
+          email ${acme_email}
+          # Errors only. An access log would record full client addresses,
+          # which would quietly undo the truncation the receiver does before
+          # storing anything — the log next to the database must not hold
+          # what the database is careful not to.
+          log {
+              level ERROR
+          }
+      }
+
+      ${domain_name} {
+          encode gzip
+
+          # Firebreak usage ping.
+          handle /v1/* {
+              reverse_proxy 127.0.0.1:8787
+          }
+
+          handle /healthz {
+              reverse_proxy 127.0.0.1:8787
+          }
+
+          # ---- add further services here ----
+          # Each gets its own loopback port and its own path prefix:
+          #
+          # handle /thing/* {
+          #     reverse_proxy 127.0.0.1:8788
+          # }
+
+          handle {
+              respond "Firebreak collector." 200
+          }
+      }
+
+  # ---- the service ----
+  - path: /etc/systemd/system/firebreak-receiver.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Firebreak telemetry collector
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=firebreak
+      Group=firebreak
+      # systemd creates and owns /var/lib/firebreak-receiver
+      StateDirectory=firebreak-receiver
+      Environment=FB_BIND=127.0.0.1:8787
+      Environment=FB_DB=/var/lib/firebreak-receiver/telemetry.db
+      Environment=FB_RETENTION_DAYS=${retention_days}
+      Environment=FB_RATE_PER_HOUR=${rate_per_hour}
+      ExecStart=/usr/local/bin/firebreak-receiver
+      Restart=on-failure
+      RestartSec=5
+
+      # It parses JSON that arrives from the internet, so it gets as little
+      # of the machine as it can be given and still work.
+      NoNewPrivileges=yes
+      PrivateTmp=yes
+      PrivateDevices=yes
+      ProtectSystem=strict
+      ProtectHome=yes
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectControlGroups=yes
+      RestrictAddressFamilies=AF_INET AF_INET6
+      RestrictNamespaces=yes
+      RestrictSUIDSGID=yes
+      LockPersonality=yes
+      MemoryDenyWriteExecute=yes
+      SystemCallArchitectures=native
+      SystemCallFilter=@system-service
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ---- a copy off the box ----
+  #
+  # The whole dataset is one SQLite file, so "backup" is a file copy. Run it
+  # from your laptop; this is here as the reminder of how.
+  - path: /usr/local/bin/firebreak-telemetry-summary
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Quick look at what has been collected.
+      set -euo pipefail
+      DB=/var/lib/firebreak-receiver/telemetry.db
+      echo "== installs seen per day (last 14) =="
+      sqlite3 -column -header "$DB" \
+        "SELECT day, COUNT(DISTINCT install_id) AS installs
+           FROM ping GROUP BY day ORDER BY day DESC LIMIT 14;"
+      echo
+      echo "== platforms (last 30 days) =="
+      sqlite3 -column -header "$DB" \
+        "SELECT os, os_name, os_version, backend, COUNT(DISTINCT install_id) AS installs
+           FROM ping WHERE day >= date('now','-30 days')
+          GROUP BY os, os_name, os_version, backend ORDER BY installs DESC;"
+      echo
+      echo "== features (last 30 days) =="
+      sqlite3 -column -header "$DB" \
+        "SELECT features, COUNT(DISTINCT install_id) AS installs
+           FROM ping WHERE day >= date('now','-30 days')
+          GROUP BY features ORDER BY installs DESC;"
+
+runcmd:
+  # Oracle's Ubuntu images ship a restrictive INPUT chain that only allows
+  # SSH. The VCN security list is one half of the story; this is the other,
+  # and forgetting it is the classic "why does Let's Encrypt time out".
+  - iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT
+  - iptables -I INPUT 1 -p tcp --dport 443 -j ACCEPT
+  - netfilter-persistent save
+
+  # Caddy from its own apt repository.
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update
+  - apt-get install -y caddy
+
+  # Rust for the ubuntu user; Terraform builds the receiver as that user.
+  - su - ubuntu -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path"
+
+  # The unit is enabled now and started by Terraform once the binary exists.
+  # It will restart-loop until then, which is expected and harmless.
+  - systemctl daemon-reload
+  - systemctl enable firebreak-receiver
+  - systemctl enable --now caddy
+  - systemctl reload caddy || systemctl restart caddy

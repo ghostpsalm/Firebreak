@@ -1,0 +1,20 @@
+[package]
+name = "firebreak-receiver"
+version = "0.1.0"
+edition = "2021"
+description = "Collector for Firebreak's opt-in usage ping: validates, coarsens and stores"
+license-file = "../../LICENSE"
+publish = false
+
+# Deliberately three dependencies and no async runtime. This is a service
+# that takes one small JSON POST per install per day behind a reverse proxy;
+# a threaded listener is the right size for it, and a small dependency tree
+# is the point on a box that is exposed to the internet.
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2
+strip = true

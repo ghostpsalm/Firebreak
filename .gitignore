@@ -1,4 +1,16 @@
 /target
+/server/receiver/target
+
+# Terraform working state. terraform.tfvars names the tenancy and points at
+# an API signing key; the state file additionally holds the rendered
+# cloud-init and every resource OCID. Neither belongs in a git history.
+# .terraform.lock.hcl is deliberately NOT ignored — it pins provider
+# versions and is meant to be committed.
+/server/terraform/.terraform/
+/server/terraform/terraform.tfvars
+/server/terraform/*.tfstate
+/server/terraform/*.tfstate.*
+/server/terraform/*.tfplan
 # code-review reports (code-review, deep/repo review skills) stay local
 CODE_REVIEW_*.md
 DEEP_CODE_REVIEW_*.md

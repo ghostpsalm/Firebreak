@@ -28,4 +28,15 @@ fi
 echo "== cargo test =="
 cargo test
 
+# The collector is its own crate under server/, so none of the above touches
+# it. It is a service that parses input from the internet — the last thing it
+# should be is the unlinted corner of the repo.
+echo "== receiver (server/receiver) =="
+(
+    cd server/receiver
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+)
+
 echo "== gate passed =="

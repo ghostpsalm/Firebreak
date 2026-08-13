@@ -150,6 +150,52 @@ reader needs no privileges and never touches the local firewall.
   measure travels as `hits: None`, not `0` — zero is the list a reviewer works
   through deleting things from.
 
+## Telemetry (`src/telemetry.rs`, `server/`)
+
+An opt-in daily usage ping, and the collector that receives it. `TELEMETRY.md`
+is the public statement of what is sent; keep it in step with `Payload`, and
+with the consent dialog, which lists the same fields in prose.
+
+The tool runs as admin/root over someone's firewall, so the bar is *auditable*
+rather than merely disclosed. Five properties carry that, and none of them is
+decoration:
+
+- **`ENDPOINT` empty means the whole feature is off** — no prompt, no stored
+  state, no request. It is empty in the repo, so a source build cannot report.
+  Same fail-closed shape as `TRUSTED_PUBLIC_KEY`. `consent()` returns
+  `Unasked` when unconfigured, which is what enforces it.
+- **`--telemetry preview` prints the real payload**, from the same `build()`
+  the sender uses. A preview that merely describes the payload is worth
+  nothing; don't let the two paths diverge.
+- **The payload is a closed set of low-cardinality facts**, every one assembled
+  here from an enumerated source. `Feature` is an enum precisely so there is
+  no way to record an arbitrary string. `payload_shape_is_pinned` fails if a
+  field appears or vanishes — that failure is a prompt to update the docs and
+  the dialog, not to update the assertion.
+- **Ages and run counts are buckets, not numbers.** The install ID rotates
+  every 90 days; an exact age would let a new ID be stitched onto the old one
+  and defeat the rotation. Never "improve" these into integers.
+- **Denying erases the identity.** `set_consent(Denied)` deletes the install
+  ID, enrolment date and run count — a "no" must leave nothing behind that a
+  later bug could send.
+
+Be accurate about the IP. The payload carries no address, but the collector
+sees one like any web server. Saying "we never send your IP" and stopping
+there is the exact dishonesty this feature is built to avoid, so the dialog,
+the `--help` text, `README.md` and `TELEMETRY.md` all state the truncation
+(`/24`, `/48`) instead. Caddy's access log is off for the same reason: a log
+beside the database must not hold what the database is careful not to.
+
+On the server side (`server/receiver`, `server/terraform`): unknown JSON
+fields are rejected outright rather than dropped, every field is checked
+against a closed vocabulary or a length cap, the one-row-per-install-per-day
+rule is a unique index rather than a trust in the client, and
+`X-Forwarded-For` is read from the **end** — Caddy appends the real peer, so
+taking the first entry would let a client choose what is recorded about it.
+
+The receiver is its own crate and **`./scripts/gate.sh` covers it too**; it is
+not part of the main binary's build.
+
 ## Installing
 
 `install/` holds the two one-line installers (`install.sh` for Linux,

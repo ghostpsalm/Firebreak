@@ -1,0 +1,41 @@
+// Copy to terraform.tfvars and fill in. That file is git-ignored — it names
+// your tenancy and points at a private key.
+//
+// The five auth values are the same ones `oci setup config` writes to
+// ~/.oci/config; read them off there if you already have it set up.
+
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaa..."
+user_ocid        = "ocid1.user.oc1..aaaa..."
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "uk-london-1"
+
+// The tenancy OCID works here if you have not created compartments.
+compartment_ocid = "ocid1.tenancy.oc1..aaaa..."
+
+// ---- access ----
+ssh_public_key       = "ssh-ed25519 AAAA... you@example.com"
+ssh_private_key_path = "~/.ssh/id_ed25519"
+
+// Narrow this to your own address if it is stable. It is the only port on
+// the box worth attacking.
+// ssh_allowed_cidr = "203.0.113.47/32"
+
+// ---- the service ----
+domain_name = "telemetry.example.com"
+acme_email  = "you@example.com"
+
+// ---- optional ----
+
+// The default AMD micro shape is 1 OCPU / 1 GB and almost always available.
+// The ARM shape is a much better machine but frequently reports no capacity
+// in the free tier; if you want it, expect to retry, and try other values of
+// availability_domain_index.
+//
+// instance_shape  = "VM.Standard.A1.Flex"
+// shape_ocpus     = 2
+// shape_memory_gb = 12
+// availability_domain_index = 0
+
+// How long a ping is kept before the nightly sweep drops it.
+// retention_days = 400
