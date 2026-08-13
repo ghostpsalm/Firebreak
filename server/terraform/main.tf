@@ -147,11 +147,12 @@ resource "oci_core_instance" "this" {
   metadata = {
     ssh_authorized_keys = var.ssh_public_key
     user_data = base64encode(templatefile("${path.module}/cloud-init.yaml.tftpl", {
-      domain_name    = var.domain_name
-      acme_email     = var.acme_email
-      retention_days = var.retention_days
-      rate_per_hour  = var.rate_per_hour
-      deno_version   = var.deno_version
+      domain_name       = var.domain_name
+      acme_email        = var.acme_email
+      retention_days    = var.retention_days
+      rate_per_hour     = var.rate_per_hour
+      deno_version      = var.deno_version
+      deploy_public_key = trimspace(var.deploy_public_key)
     }))
   }
 
@@ -226,8 +227,11 @@ resource "null_resource" "receiver" {
   provisioner "remote-exec" {
     inline = [
       "set -euo pipefail",
-      "sudo install -d -m 0755 /opt/firebreak-receiver",
-      "sudo install -m 0644 /home/ubuntu/receiver/*.ts /opt/firebreak-receiver/",
+      // Ownership matches what cloud-init set up, so a later CI deploy —
+      // which runs as `deploy` and does not use sudo for the copy — can
+      // still write here.
+      "sudo install -d -m 0755 -o deploy -g deploy /opt/firebreak-receiver",
+      "sudo install -m 0644 -o deploy -g deploy /home/ubuntu/receiver/*.ts /opt/firebreak-receiver/",
       "sudo systemctl restart firebreak-receiver",
       "sudo systemctl is-active --quiet firebreak-receiver",
       // Prove it end to end rather than trusting that the unit started: a

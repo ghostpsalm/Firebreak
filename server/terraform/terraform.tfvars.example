@@ -25,6 +25,18 @@ ssh_private_key_path = "~/.ssh/id_ed25519"
 domain_name = "telemetry.example.com"
 acme_email  = "you@example.com"
 
+// ---- continuous deployment (optional) ----
+//
+// Public half of a key that exists only for CI. Installed with a forced
+// command, so it can redeploy the collector and do nothing else — no shell,
+// no forwarding, no file reads. Leave it empty and no deploy account is
+// created; deployment then stays a `terraform apply` from your machine.
+//
+//   ssh-keygen -t ed25519 -f ci_deploy_key -N "" -C "firebreak CI deploy"
+//   terraform output ci_setup     # prints the `gh secret set` commands
+//
+// deploy_public_key = "ssh-ed25519 AAAA... firebreak CI deploy"
+
 // ---- optional ----
 
 // The default AMD micro shape is 1 OCPU / 1 GB and almost always available.

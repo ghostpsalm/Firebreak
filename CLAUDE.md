@@ -194,6 +194,16 @@ rule is a unique index rather than a trust in the client, and
 `$proxy_add_x_forwarded_for` appends the real peer, so
 taking the first entry would let a client choose what is recorded about it.
 
+**Deployment is automated but narrow.** A push to `main` that passes the gate
+deploys the collector (`.github/workflows/ci.yml`, `deploy` job). The key CI
+holds is installed with `command="…/firebreak-deploy",restrict`, so it can
+redeploy the collector and nothing else — a stolen secret is not a shell on
+the box. The script extracts only three named members from the archive,
+typechecks before installing, skips the restart when the code is unchanged,
+and rolls back if the health check fails. Keep all four. **Infrastructure is
+deliberately not applied from CI** — that needs create/destroy credentials
+and remote state, and stays a decision made at a keyboard.
+
 The receiver is a **Deno/TypeScript** service, not Rust: there is no build
 step, so deploying it is a file copy and a restart, and the runtime enforces
 its own sandbox (`--no-remote`, `--allow-net` scoped to one port,

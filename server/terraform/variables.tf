@@ -116,6 +116,24 @@ variable "acme_email" {
   description = "Contact address for Let's Encrypt expiry notices."
 }
 
+variable "deploy_public_key" {
+  type        = string
+  description = <<-EOT
+    Public half of the key GitHub Actions deploys with, e.g. the contents of
+    ci_deploy_key.pub. Leave empty and no deploy account is created at all —
+    deployment then stays a `terraform apply` from your own machine.
+
+    The key is installed with a forced command, so it cannot open a shell,
+    forward a port or read a file: presenting it runs
+    /usr/local/bin/firebreak-deploy and nothing else, whatever the client
+    asks for. Generate a key that exists only for this and never leaves CI:
+
+      ssh-keygen -t ed25519 -f ci_deploy_key -N "" -C "firebreak CI deploy"
+  EOT
+  default     = ""
+  sensitive   = false
+}
+
 variable "deno_version" {
   type        = string
   description = <<-EOT

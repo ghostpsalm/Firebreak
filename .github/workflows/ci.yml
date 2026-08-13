@@ -34,3 +34,76 @@ jobs:
 
       - name: Run the gate
         run: ./scripts/gate.sh
+
+  # Deploying the collector is the *only* thing this pipeline does to
+  # production, and it happens after the gate, never beside it. The key it
+  # uses is installed on the host with a forced command, so a stolen secret
+  # buys the ability to redeploy the collector — not a shell on the box.
+  #
+  # Infrastructure is deliberately NOT applied from here: `terraform apply`
+  # needs credentials that can create and destroy, and remote state to go
+  # with them. That stays a decision someone makes at a keyboard.
+  deploy:
+    name: Deploy the collector
+    needs: gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment in repo settings and a
+    # deploy becomes a decision rather than a side effect of merging.
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is a deploy target configured?
+        id: cfg
+        env:
+          HOST: ${{ secrets.OCI_HOST }}
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "::notice::OCI_HOST is not set, so there is nothing to deploy to. See server/README.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to OCI
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.OCI_HOST }}
+          DEPLOY_KEY: ${{ secrets.OCI_DEPLOY_KEY }}
+          HOST_KEY: ${{ secrets.OCI_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_KEY" || { echo "OCI_DEPLOY_KEY is not set"; exit 1; }
+          # Refuse rather than fall back to StrictHostKeyChecking=no: an
+          # unpinned host is a deploy that can be pointed at another machine.
+          test -n "$HOST_KEY" || { echo "OCI_HOST_KEY is not set — see server/README.md"; exit 1; }
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/deploy"
+          chmod 600 "$HOME/.ssh/deploy"
+          printf '%s\n' "$HOST_KEY" > "$HOME/.ssh/known_hosts"
+
+          # The key's forced command ignores whatever we ask to run, so there
+          # is no command to name here: the archive on stdin is the request.
+          tar -cz -C server/receiver main.ts ping.ts db.ts \
+            | ssh -i "$HOME/.ssh/deploy" \
+                  -o IdentitiesOnly=yes \
+                  -o StrictHostKeyChecking=yes \
+                  -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                  -o ConnectTimeout=15 \
+                  "deploy@$HOST"
+
+      - name: Confirm the collector is serving
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          DOMAIN: ${{ secrets.OCI_DOMAIN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOMAIN" ]; then
+            echo "::notice::OCI_DOMAIN not set — skipping the public health check."
+            exit 0
+          fi
+          # Through TLS from the outside, not just loopback on the box: the
+          # deploy script already proved the service answers locally.
+          curl -fsS --max-time 20 "https://$DOMAIN/healthz"

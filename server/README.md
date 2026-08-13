@@ -89,6 +89,61 @@ The `*_test.ts` files are deliberately **not** deployed — the box has no
 business holding a test suite, and they are the only files here with a
 third-party import.
 
+### Continuous deployment
+
+Once set up, a push to `main` that passes the gate deploys the collector by
+itself — the file copy above becomes the fallback, not the routine.
+
+Generate a key that exists only for this, and put its public half in
+`terraform.tfvars`:
+
+```bash
+ssh-keygen -t ed25519 -f ci_deploy_key -N "" -C "firebreak CI deploy"
+# deploy_public_key = "ssh-ed25519 AAAA... firebreak CI deploy"
+terraform apply
+terraform output ci_setup      # prints the three `gh secret set` commands
+```
+
+`ci_setup` gives you `OCI_HOST`, `OCI_DEPLOY_KEY` and `OCI_HOST_KEY` (plus an
+optional `OCI_DOMAIN` for a public health check). Leave `deploy_public_key`
+empty and no deploy account is created at all.
+
+**What that key can do, and only that.** It is installed with
+`command="/usr/local/bin/firebreak-deploy",restrict`, so presenting it runs
+the deploy script and nothing else — no shell, no port forwarding, no pty, no
+file reads, whatever the client asks for. A stolen secret buys the ability to
+redeploy the collector, not a login on the box. Prove it yourself:
+
+```bash
+ssh -i ci_deploy_key deploy@<ip> whoami     # runs the deploy script, not whoami
+```
+
+The script is the interesting part, and it is deliberately suspicious of what
+it is handed:
+
+- **only three named members are extracted** from the archive, so a path
+  traversal, an absolute path, a symlink or simply an extra file writes
+  nothing anywhere;
+- it **typechecks** (`deno check --no-remote`) before anything goes near the
+  live directory;
+- it **skips the restart entirely** when the code is byte-identical, so a
+  push that only touched the client does not bounce a working service;
+- it **health-checks after restarting and rolls back** if the collector does
+  not come back, failing the pipeline. A green build over a collector that
+  stopped answering is worse than a red one.
+
+`OCI_HOST_KEY` is not optional — the workflow refuses to run without it
+rather than falling back to `StrictHostKeyChecking=no`, which would let a
+deploy be steered to another machine.
+
+Deployment is scoped to the app on purpose. **Infrastructure is not applied
+from CI**: `terraform apply` needs credentials that can create and destroy,
+and remote state to go with them. That stays a decision made at a keyboard,
+and state stays local.
+
+If you want a human in the loop, add required reviewers to the `production`
+environment in repo settings and the deploy waits for approval.
+
 ### Working on the receiver
 
 ```bash
