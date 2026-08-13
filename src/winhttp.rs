@@ -1,9 +1,39 @@
-//! Minimal HTTPS GET over WinHTTP — no subprocess, no TLS crate (Windows
-//! provides the TLS stack). Used by the self-update check/download so those
-//! paths work under application-control ringfencing.
+//! Minimal HTTPS over WinHTTP — no subprocess, no TLS crate (Windows
+//! provides the TLS stack). Used by the self-update check/download and by
+//! the usage ping, so those paths work under application-control
+//! ringfencing.
 
 #[cfg(windows)]
 use anyhow::{anyhow, bail, Result};
+
+/// Timeouts for a download: generous, because a release asset over a slow
+/// link is a legitimate several-minute transfer.
+#[cfg(windows)]
+pub const DOWNLOAD_TIMEOUTS: Timeouts = Timeouts {
+    resolve_ms: 10_000,
+    connect_ms: 20_000,
+    send_ms: 30_000,
+    receive_ms: 60_000,
+};
+
+/// Timeouts for the usage ping. Short on purpose: the ping is best-effort
+/// and must never be the reason a run takes longer to finish.
+#[cfg(windows)]
+pub const PING_TIMEOUTS: Timeouts = Timeouts {
+    resolve_ms: 3_000,
+    connect_ms: 4_000,
+    send_ms: 4_000,
+    receive_ms: 4_000,
+};
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub struct Timeouts {
+    pub resolve_ms: u32,
+    pub connect_ms: u32,
+    pub send_ms: u32,
+    pub receive_ms: u32,
+}
 
 /// HTTPS GET. Follows redirects (WinHTTP default for https→https, which is
 /// what GitHub's releases/latest/download uses). `extra_headers` are CRLF-
@@ -22,14 +52,61 @@ pub fn get_with_progress(
     extra_headers: &str,
     progress: &dyn Fn(u64, Option<u64>),
 ) -> Result<Vec<u8>> {
+    let (status, body) = send(
+        Request {
+            method: "GET",
+            url,
+            headers: extra_headers,
+            body: None,
+            timeouts: DOWNLOAD_TIMEOUTS,
+        },
+        progress,
+    )?;
+    check_status(status)?;
+    Ok(body)
+}
+
+/// HTTPS POST of a JSON body. Returns the response status so a caller can
+/// tell "the server said no" from "the network is down"; the body is
+/// discarded, since nothing that posts here reads a reply.
+#[cfg(windows)]
+pub fn post_json(url: &str, body: &[u8]) -> Result<u32> {
+    let (status, _) = send(
+        Request {
+            method: "POST",
+            url,
+            headers: "Content-Type: application/json",
+            body: Some(body),
+            timeouts: PING_TIMEOUTS,
+        },
+        &|_, _| {},
+    )?;
+    Ok(status)
+}
+
+#[cfg(windows)]
+struct Request<'a> {
+    method: &'a str,
+    url: &'a str,
+    /// CRLF-separated, no trailing CRLF. Empty for none.
+    headers: &'a str,
+    body: Option<&'a [u8]>,
+    timeouts: Timeouts,
+}
+
+/// The one place that talks to WinHTTP. GET and POST differ only in the verb,
+/// the optional body and the timeouts, so they share this rather than keeping
+/// two copies of the handle lifecycle in a path that runs elevated.
+#[cfg(windows)]
+fn send(req: Request, progress: &dyn Fn(u64, Option<u64>)) -> Result<(u32, Vec<u8>)> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Networking::WinHttp::{
         WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
         WinHttpQueryDataAvailable, WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest,
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
+        WinHttpSetTimeouts, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE,
     };
 
-    let (host, path) = split_url(url)?;
+    let (host, path) = split_url(req.url)?;
 
     // RAII guard so every HINTERNET closes on any early return
     struct H(*mut core::ffi::c_void);
@@ -56,6 +133,16 @@ pub fn get_with_progress(
         }
         let _session = H(session);
 
+        // Best effort: a host that refuses to set timeouts still works, it
+        // just falls back to WinHTTP's much longer defaults.
+        let _ = WinHttpSetTimeouts(
+            session,
+            req.timeouts.resolve_ms as i32,
+            req.timeouts.connect_ms as i32,
+            req.timeouts.send_ms as i32,
+            req.timeouts.receive_ms as i32,
+        );
+
         let connect = WinHttpConnect(session, &HSTRING::from(host.as_str()), 443, 0);
         if connect.is_null() {
             bail!(
@@ -67,7 +154,7 @@ pub fn get_with_progress(
 
         let request = WinHttpOpenRequest(
             connect,
-            &HSTRING::from("GET"),
+            &HSTRING::from(req.method),
             &HSTRING::from(path.as_str()),
             PCWSTR::null(),
             PCWSTR::null(),
@@ -82,18 +169,24 @@ pub fn get_with_progress(
         }
         let _request = H(request);
 
-        let headers: Vec<u16> = extra_headers.encode_utf16().collect();
+        let headers: Vec<u16> = req.headers.encode_utf16().collect();
         let headers_opt: Option<&[u16]> = if headers.is_empty() {
             None
         } else {
             Some(&headers)
         };
-        WinHttpSendRequest(request, headers_opt, None, 0, 0, 0).map_err(|_| {
-            anyhow!(
-                "WinHttpSendRequest failed: {}",
-                windows::core::Error::from_win32()
-            )
-        })?;
+        let (optional, len) = match req.body {
+            Some(b) if !b.is_empty() => (Some(b.as_ptr() as *const core::ffi::c_void), b.len()),
+            _ => (None, 0),
+        };
+        WinHttpSendRequest(request, headers_opt, optional, len as u32, len as u32, 0).map_err(
+            |_| {
+                anyhow!(
+                    "WinHttpSendRequest failed: {}",
+                    windows::core::Error::from_win32()
+                )
+            },
+        )?;
 
         WinHttpReceiveResponse(request, std::ptr::null_mut()).map_err(|_| {
             anyhow!(
@@ -102,6 +195,7 @@ pub fn get_with_progress(
             )
         })?;
 
+        let status = status_code(request);
         let total = content_length(request);
         progress(0, total);
 
@@ -134,7 +228,42 @@ pub fn get_with_progress(
                 break;
             }
         }
-        Ok(body)
+        Ok((status, body))
+    }
+}
+
+/// Turn an HTTP error status into an error. Without this a 404 reaches the
+/// caller as an unexplained JSON parse failure.
+#[cfg(windows)]
+fn check_status(status: u32) -> Result<()> {
+    // 0 means the status could not be read; the body is the better signal
+    // then, so don't manufacture a failure from a missing header.
+    if status >= 400 {
+        bail!("server returned HTTP {status}");
+    }
+    Ok(())
+}
+
+/// The response's status line code, or 0 if it could not be read.
+#[cfg(windows)]
+unsafe fn status_code(request: *mut core::ffi::c_void) -> u32 {
+    use windows::core::PCWSTR;
+    use windows::Win32::Networking::WinHttp::{
+        WinHttpQueryHeaders, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+    };
+
+    let mut code: u32 = 0;
+    let mut len = std::mem::size_of::<u32>() as u32;
+    match WinHttpQueryHeaders(
+        request,
+        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        PCWSTR::null(),
+        Some(&mut code as *mut u32 as *mut _),
+        &mut len,
+        std::ptr::null_mut(),
+    ) {
+        Ok(()) => code,
+        Err(_) => 0,
     }
 }
 

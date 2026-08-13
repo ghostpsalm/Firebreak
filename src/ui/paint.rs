@@ -236,6 +236,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
     }
     about_box(app, ctx);
     update_box(app, ctx);
+    consent_box(app, ctx);
     // 1px window border on a foreground layer (we draw our own chrome)
     let screen = ctx.screen_rect();
     ctx.layer_painter(egui::LayerId::new(
@@ -920,6 +921,7 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
     scrim(ctx, "about_scrim");
     let mut open = true;
     let mut open_updates = false;
+    let mut open_consent = false;
     dialog_window(ctx, "about", |ui| {
         ui.add_space(18.0);
         let logo = app.logo_texture(ctx);
@@ -986,6 +988,27 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
                 open_updates = true;
             }
         });
+        // Only where there is a collector to send to — a build that cannot
+        // report should not advertise a setting that does nothing.
+        if crate::telemetry::configured() {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new(if app.telemetry_on {
+                        "Usage pings: on"
+                    } else {
+                        "Usage pings: off"
+                    })
+                    .font(t::sans(11.5))
+                    .color(t::SECONDARY()),
+                );
+                ui.add_space(8.0);
+                if link(ui, "Change…", t::ACCENT()).clicked() {
+                    open_consent = true;
+                }
+            });
+        }
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1005,6 +1028,159 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
         app.about_open = false;
         app.update_open = true;
         app.spawn_update_check(ctx.clone());
+    }
+    if open_consent {
+        app.about_open = false;
+        app.consent_open = true;
+    }
+}
+
+/// The telemetry consent dialog.
+///
+/// Shown once, before anything has been sent, and it is the only thing that
+/// can turn pings on from the window. Two rules govern what it says:
+///
+/// * **It lists what is sent, not a characterisation of it.** The list below
+///   is the field list of `telemetry::Payload`; if that struct gains a field
+///   its pinned-shape test fails and points here.
+/// * **It is honest about the IP.** The payload carries no address, but the
+///   collector sees one the way any web server does. Claiming otherwise
+///   would be the exact dishonesty this dialog exists to avoid, so the
+///   truncation is stated rather than the absence implied.
+fn consent_box(app: &mut App, ctx: &egui::Context) {
+    if !app.consent_open {
+        return;
+    }
+    scrim(ctx, "consent_scrim");
+    let mut answer: Option<bool> = None;
+    let mut dismissed = false;
+
+    dialog_window(ctx, "consent", |ui| {
+        ui.add_space(18.0);
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Help improve Firebreak")
+                    .font(t::semibold(15.0))
+                    .color(t::INK()),
+            );
+        });
+        ui.add_space(8.0);
+        for line in [
+            "Firebreak can send one anonymous ping a day, so its",
+            "author knows which systems to support and which",
+            "features are worth keeping. It is entirely optional.",
+        ] {
+            indented(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(line)
+                        .font(t::sans(11.5))
+                        .color(t::SECONDARY()),
+                );
+            });
+        }
+
+        let section = |ui: &mut egui::Ui, title: &str, color: Color32, lines: &[&str]| {
+            ui.add_space(12.0);
+            indented(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .font(t::semibold(11.5))
+                        .color(color),
+                );
+            });
+            ui.add_space(2.0);
+            for l in lines {
+                ui.horizontal(|ui| {
+                    ui.add_space(28.0);
+                    ui.label(
+                        egui::RichText::new(*l)
+                            .font(t::sans(11.5))
+                            .color(t::SECONDARY()),
+                    );
+                });
+            }
+        };
+
+        section(
+            ui,
+            "Sent",
+            t::ACCENT(),
+            &[
+                "Windows or Linux, and which version",
+                "CPU architecture and motherboard maker",
+                "Which firewall backend is in charge",
+                "Firebreak's version and features you've used",
+                "A random ID that is replaced every 90 days",
+            ],
+        );
+        section(
+            ui,
+            "Never sent",
+            t::ACCENT(),
+            &[
+                "Hostnames, usernames or file paths",
+                "Anything read out of your firewall — no rule",
+                "names, addresses or ports",
+                "Serial numbers of any kind",
+            ],
+        );
+
+        ui.add_space(12.0);
+        for line in [
+            "Your IP is visible to the server the same way it is to",
+            "any website. It is kept only as a coarse network",
+            "prefix, never in full.",
+        ] {
+            indented(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(line)
+                        .font(t::sans(11.0))
+                        .color(t::TERTIARY()),
+                );
+            });
+        }
+        ui.add_space(10.0);
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Change it any time in About, or see the exact")
+                    .font(t::sans(11.0))
+                    .color(t::TERTIARY()),
+            );
+        });
+        indented(ui, |ui| {
+            ui.label(
+                egui::RichText::new("payload with:  firebreak --telemetry preview")
+                    .font(t::mono(11.0))
+                    .color(t::TERTIARY()),
+            );
+        });
+
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(20.0);
+                if primary_button(ui, "Yes, send pings", t::ACCENT()).clicked() {
+                    answer = Some(true);
+                }
+                ui.add_space(8.0);
+                if flat_button(ui, "No thanks").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        ui.add_space(16.0);
+    });
+
+    // Escape is not a "yes". Closing the dialog without choosing leaves the
+    // answer unrecorded, so it is asked again next launch and nothing is
+    // sent in the meantime.
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        dismissed = true;
+    }
+    match answer {
+        Some(granted) => app.answer_consent(granted),
+        None if dismissed => app.consent_open = false,
+        None => {}
     }
 }
 

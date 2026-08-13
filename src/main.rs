@@ -23,6 +23,7 @@ mod secure_dir;
 mod store;
 mod support;
 mod syspath;
+mod telemetry;
 mod theme;
 mod time_util;
 mod ui;
@@ -49,6 +50,11 @@ struct Args {
     uninstall_desktop: bool,
     review: Option<std::path::PathBuf>,
     db_path: std::path::PathBuf,
+    /// `--telemetry <on|off|status|preview>`, when given.
+    telemetry: Option<String>,
+    /// `--no-telemetry`: suppress the ping for this run only, without
+    /// changing the stored answer.
+    no_telemetry: bool,
 }
 
 fn parse_args() -> Args {
@@ -71,6 +77,8 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
         uninstall_desktop: false,
         review: None,
         db_path: store::default_db_path(),
+        telemetry: None,
+        no_telemetry: false,
     };
     let mut it = args_iter.peekable();
     while let Some(a) = it.next() {
@@ -105,6 +113,14 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                 }
             },
             "--reset" => args.reset = true,
+            "--no-telemetry" => args.no_telemetry = true,
+            "--telemetry" => match it.peek().filter(|p| !p.starts_with("--")) {
+                Some(_) => args.telemetry = it.next(),
+                None => {
+                    eprintln!("--telemetry requires on, off, status or preview");
+                    std::process::exit(2);
+                }
+            },
             "--db" => match it.peek().filter(|p| !p.starts_with("--")) {
                 Some(_) => args.db_path = it.next().unwrap().into(),
                 None => {
@@ -186,6 +202,24 @@ fn parse_args_from(args_iter: impl Iterator<Item = String>) -> Args {
                      \x20 --update          download, verify and install the newest release.\n\
                      \x20                   The download is checked against the pinned signing\n\
                      \x20                   key and refused if it does not verify.\n\n\
+                     TELEMETRY (both platforms, off until you say otherwise):\n\
+                     \x20 Firebreak can send one anonymous ping a day so its author knows\n\
+                     \x20 which systems to support. It is opt-in: nothing is sent until you\n\
+                     \x20 answer yes, the window asks once, and a headless run never asks and\n\
+                     \x20 never sends unless --telemetry on was run here.\n\
+                     \x20 Sent:   OS and version, CPU architecture, firewall backend, board\n\
+                     \x20         manufacturer, Firebreak's version, a rotating random install\n\
+                     \x20         ID, and which features have been used.\n\
+                     \x20 Never:  hostnames, usernames, rule names, addresses, ports, file\n\
+                     \x20         paths, serial numbers, or anything read out of your firewall.\n\
+                     \x20 Your IP is not in the message, but the server sees it as any website\n\
+                     \x20 would; it is stored only as a coarse network prefix, never in full.\n\
+                     \x20 --telemetry status   what is stored and whether pings are on\n\
+                     \x20 --telemetry preview  print the exact JSON that would be sent\n\
+                     \x20 --telemetry on|off   answer, or change the answer, at any time\n\
+                     \x20 --no-telemetry       skip the ping for this run only\n\
+                     \x20 Setting FIREBREAK_NO_TELEMETRY=1 disables it everywhere, and no\n\
+                     \x20 prompt is ever shown.\n\n\
                      EXAMPLES:\n\
                      \x20 firebreak --enable-only      start collecting on a server, come back\n\
                      \x20                              in a few weeks\n\
@@ -224,6 +258,7 @@ fn main() -> Result<()> {
     // this host's firewall nor root — and must not touch either. Handled
     // before every platform branch for exactly that reason.
     if let Some(path) = &args.review {
+        mark(&args.db_path, telemetry::Feature::Review);
         let bundle = review::read(path).with_context(|| format!("reading {}", path.display()))?;
         let source = format!(
             "{} ({}) collected {}",
@@ -243,6 +278,7 @@ fn main() -> Result<()> {
     // server the About box is unreachable — so it gets a CLI path on both
     // platforms rather than being GUI-only.
     if args.check_update || args.update {
+        mark(&args.db_path, telemetry::Feature::Update);
         return run_update(args.update);
     }
 
@@ -264,6 +300,7 @@ fn main() -> Result<()> {
         // anything that needs a firewall backend — installing a launcher is
         // useful on a host Firebreak cannot yet audit.
         if args.install_desktop {
+            mark(&args.db_path, telemetry::Feature::Desktop);
             println!("{}", desktop::install()?);
             return Ok(());
         }
@@ -313,6 +350,101 @@ fn run_update(install: bool) -> Result<()> {
     Ok(())
 }
 
+/// `--telemetry <on|off|status|preview>`.
+///
+/// `preview` goes through the same builder the sender uses, so what it
+/// prints and what would actually be posted cannot drift apart. That is the
+/// whole point of it existing: nobody should have to read this source, or
+/// take its word, to find out what a tool running as root sends home.
+fn run_telemetry(cmd: &str, db_path: &std::path::Path, backend: &str) -> Result<()> {
+    let store = Store::open(db_path)?;
+    match cmd {
+        "on" => {
+            telemetry::set_consent(&store, telemetry::Consent::Granted, chrono::Utc::now())?;
+            println!("Telemetry is on — one anonymous ping a day, at most.");
+            if !telemetry::configured() {
+                println!(
+                    "This build has no collector configured, so nothing will actually be sent."
+                );
+            }
+            println!("See exactly what it sends:  firebreak --telemetry preview");
+        }
+        "off" => {
+            telemetry::set_consent(&store, telemetry::Consent::Denied, chrono::Utc::now())?;
+            println!(
+                "Telemetry is off. The stored install ID and run history have been erased, \
+                 so there is nothing left here to send."
+            );
+        }
+        "status" => {
+            for line in telemetry::status_lines(&store) {
+                println!("{line}");
+            }
+        }
+        "preview" => {
+            println!(
+                "This is the entire payload, built by the same code that sends it.\n\
+                 It goes to {} and nowhere else.\n",
+                if telemetry::configured() {
+                    telemetry::ENDPOINT
+                } else {
+                    "(no collector configured in this build)"
+                }
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&telemetry::preview(&store, backend)?)?
+            );
+        }
+        other => bail!("--telemetry takes on, off, status or preview (got {other:?})"),
+    }
+    Ok(())
+}
+
+/// Which feature this run's flags represent, if any. A run has one dominant
+/// mode, so this is an ordered match rather than a set — the plain windowed
+/// run, which is the common case, is deliberately not a "feature".
+fn feature_for(args: &Args) -> Option<telemetry::Feature> {
+    if args.collect.is_some() {
+        Some(telemetry::Feature::Collect)
+    } else if args.enable_only {
+        Some(telemetry::Feature::EnableOnly)
+    } else if args.export_support {
+        Some(telemetry::Feature::Support)
+    } else if args.no_ui {
+        Some(telemetry::Feature::Headless)
+    } else {
+        None
+    }
+}
+
+/// Count this run and post a ping if one is due, returning the in-flight
+/// request. Bind the result to a named local for the rest of the run — it
+/// waits on drop, so every early return gets a bounded chance to finish.
+///
+/// A store that will not open costs the ping, never the run.
+fn start_ping(args: &Args, backend: &str) -> Option<telemetry::Ping> {
+    let store = Store::open(&args.db_path).ok()?;
+    if let Some(f) = feature_for(args) {
+        telemetry::mark(&store, f);
+    }
+    telemetry::maybe_send(&store, backend, args.no_telemetry)
+}
+
+/// Note a feature as used, best effort.
+///
+/// Telemetry must never be able to fail a run, so a store that will not open
+/// is simply not recorded. The `configured` check keeps a build with no
+/// collector from opening the database at all.
+fn mark(db_path: &std::path::Path, feature: telemetry::Feature) {
+    if !telemetry::configured() {
+        return;
+    }
+    if let Ok(store) = Store::open(db_path) {
+        telemetry::mark(&store, feature);
+    }
+}
+
 /// The Linux run. Deliberately not the Windows flow with substitutions: on
 /// ufw there is no audit policy to enable, no event log to checkpoint and no
 /// collection clock to start, because the kernel is already counting, so the
@@ -326,6 +458,11 @@ fn run_update(install: bool) -> Result<()> {
 fn run_linux(args: &Args, backend: linux::Backend) -> Result<()> {
     // Declare the host's scope vocabulary before anything renders a rule.
     model::set_vocabulary(backend.scope_vocabulary());
+
+    if let Some(cmd) = &args.telemetry {
+        return run_telemetry(cmd, &args.db_path, backend.label());
+    }
+    let _ping = start_ping(args, backend.label());
 
     // Windows-only options must say so. Falling through to the window
     // instead would silently do something the user did not ask for.
@@ -407,6 +544,13 @@ fn run_windows(args: Args) -> Result<()> {
              require it). The elevation prompt was declined or unavailable."
         );
     }
+
+    if let Some(cmd) = &args.telemetry {
+        return run_telemetry(cmd, &args.db_path, "wfp");
+    }
+    // On a Linux host with no supported backend this flow still runs, and
+    // calling that "wfp" would be a lie in the data.
+    let _ping = start_ping(&args, if cfg!(windows) { "wfp" } else { "none" });
 
     if args.dump_filters {
         return dump_filters();

@@ -504,6 +504,14 @@ pub struct App {
     /// The Updates dialog. Its own window, not a section of About — see
     /// `paint::update_box`.
     update_open: bool,
+    /// The telemetry consent dialog. Shown unprompted exactly once, on the
+    /// first live run of a build that has a collector, and reachable again
+    /// from About. Never shown in review or preview: neither is this host,
+    /// and neither has a database to record an answer in.
+    consent_open: bool,
+    /// Cached answer to "are pings on?", for the line About shows. Read once
+    /// at launch and updated on answer — never inside the paint loop.
+    pub(crate) telemetry_on: bool,
     /// Set when the window is showing a bundle from another machine:
     /// "<host> (<os>) collected <when>". Its presence is what makes the
     /// window read-only — see [`App::read_only`].
@@ -597,6 +605,8 @@ impl App {
             settings_open: false,
             about_open: false,
             update_open: false,
+            consent_open: false,
+            telemetry_on: false,
             review_source: None,
             review_pending: std::collections::HashSet::new(),
             review_tx,
@@ -627,8 +637,57 @@ impl App {
     fn new_live(db_path: PathBuf, egui_ctx: egui::Context) -> Self {
         let mut app = App::base(Some(db_path.clone()));
         app.egui_ctx = Some(egui_ctx.clone());
+        // One read at launch, not one per frame: About shows this state and
+        // opening SQLite inside the paint loop would do it 60 times a second.
+        let stored = app.stored_consent();
+        app.telemetry_on = stored == Some(crate::telemetry::Consent::Granted);
+        app.consent_open = crate::telemetry::configured()
+            && !crate::telemetry::env_opted_out()
+            && !app.read_only()
+            // None means the database would not open, so there is nowhere to
+            // record an answer — asking would be a question we then lose.
+            && stored == Some(crate::telemetry::Consent::Unasked);
         app.spawn_detect(db_path, egui_ctx);
         app
+    }
+
+    /// The telemetry answer on disk, or `None` if the store cannot be read.
+    fn stored_consent(&self) -> Option<crate::telemetry::Consent> {
+        let db = self.db_path.as_ref()?;
+        let store = crate::store::Store::open(db).ok()?;
+        Some(crate::telemetry::consent(&store))
+    }
+
+    /// Record the operator's telemetry answer and close the dialog.
+    ///
+    /// Reported through [`App::report`] like any other write, because this
+    /// one is the user's decision about their own machine and a silent
+    /// failure would leave them believing something untrue about it.
+    pub(crate) fn answer_consent(&mut self, granted: bool) {
+        self.consent_open = false;
+        let answer = if granted {
+            crate::telemetry::Consent::Granted
+        } else {
+            crate::telemetry::Consent::Denied
+        };
+        let Some(db) = self.db_path.clone() else {
+            return;
+        };
+        let wrote = crate::store::Store::open(&db)
+            .and_then(|store| crate::telemetry::set_consent(&store, answer, chrono::Utc::now()));
+        match (wrote, granted) {
+            (Ok(()), true) => {
+                self.telemetry_on = true;
+                self.report("Anonymous usage pings are on. Thank you.", false);
+            }
+            (Ok(()), false) => {
+                self.telemetry_on = false;
+                self.report("Usage pings stay off.", false);
+            }
+            // The cached flag is left alone on a failed write — it still
+            // reflects what is actually on disk, which is the point of it.
+            (Err(e), _) => self.report(format!("Could not save that preference: {e:#}"), true),
+        }
     }
 
     /// Re-read the counters on a timer so the totals track traffic while the
@@ -1233,6 +1292,14 @@ impl App {
         let plan = self.planned_changes();
         if plan.is_empty() {
             return;
+        }
+        // Marked here rather than on completion: "this install applies
+        // changes" is the fact worth knowing, and a partial apply is still
+        // an apply. Best effort, and silent — see `telemetry::mark`.
+        if let Some(db) = &self.db_path {
+            if let Ok(store) = crate::store::Store::open(db) {
+                crate::telemetry::mark(&store, crate::telemetry::Feature::Apply);
+            }
         }
         let total = plan.len();
         let all_rules: Vec<RuleInfo> = self.rows.iter().map(|r| r.rule.clone()).collect();

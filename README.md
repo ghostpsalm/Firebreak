@@ -135,6 +135,33 @@ thread and first writes a full policy backup to
   ingestion drops to zero unexpectedly, re-check with:
   `auditpol /get /subcategory:{0CCE9226-69AE-11D9-BED3-505054503030}`
 
+## Telemetry — off unless you turn it on
+
+Firebreak can send one anonymous ping a day, so I know which systems to
+support and which features earn their keep. It is **opt-in**: the window asks
+once, nothing is sent until you answer, and a headless run never asks and
+never sends.
+
+It carries the OS and version, CPU architecture, which firewall backend is in
+charge, the motherboard maker, Firebreak's version, a random ID that is
+replaced every 90 days, and which of eight named features have been used.
+It carries **nothing out of your firewall** — no rule names, addresses, ports,
+hostnames, usernames, paths or serial numbers. Your IP is not in the message,
+though the server sees one as any website does; it is truncated to a `/24`
+before it is stored, and never logged in full.
+
+Don't take this file's word for it:
+
+```
+firebreak --telemetry preview     # the exact JSON that would be sent
+firebreak --telemetry status      # what is stored, and whether it is on
+firebreak --telemetry off         # off, and erase the stored ID
+```
+
+**[TELEMETRY.md](TELEMETRY.md)** is the complete statement, field by field.
+The collector is in this repository too, under [`server/`](server/) — you can
+read what receives it as well as what sends it.
+
 ## What Firebreak is not
 
 - Not a packet-capture or WFP callout driver — Windows already records
