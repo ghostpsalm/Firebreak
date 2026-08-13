@@ -112,8 +112,9 @@ build made from a plain checkout is incapable of reporting anything, and
 
 ## The receiving end
 
-The collector is in this repository too, under `server/` — a small Rust
-service behind Caddy on an Oracle Always Free host, storing to SQLite. It:
+The collector is in this repository too, under `server/` — a small
+service on Deno behind nginx on an Oracle Always Free host, storing to
+SQLite. It:
 
 - accepts one payload shape and **rejects unknown fields outright**, so it
   cannot be used as a place to put arbitrary data;

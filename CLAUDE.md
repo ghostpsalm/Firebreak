@@ -183,18 +183,26 @@ Be accurate about the IP. The payload carries no address, but the collector
 sees one like any web server. Saying "we never send your IP" and stopping
 there is the exact dishonesty this feature is built to avoid, so the dialog,
 the `--help` text, `README.md` and `TELEMETRY.md` all state the truncation
-(`/24`, `/48`) instead. Caddy's access log is off for the same reason: a log
+(`/24`, `/48`) instead. nginx's access log is off for the same reason: a log
 beside the database must not hold what the database is careful not to.
 
 On the server side (`server/receiver`, `server/terraform`): unknown JSON
 fields are rejected outright rather than dropped, every field is checked
 against a closed vocabulary or a length cap, the one-row-per-install-per-day
 rule is a unique index rather than a trust in the client, and
-`X-Forwarded-For` is read from the **end** — Caddy appends the real peer, so
+`X-Forwarded-For` is read from the **end** — nginx's
+`$proxy_add_x_forwarded_for` appends the real peer, so
 taking the first entry would let a client choose what is recorded about it.
 
-The receiver is its own crate and **`./scripts/gate.sh` covers it too**; it is
-not part of the main binary's build.
+The receiver is a **Deno/TypeScript** service, not Rust: there is no build
+step, so deploying it is a file copy and a restart, and the runtime enforces
+its own sandbox (`--no-remote`, `--allow-net` scoped to one port,
+`--allow-read`/`--allow-write` scoped to one directory) rather than relying on
+systemd alone. Its tests are `*_test.ts` beside each module — the Deno idiom,
+and the one place this repo's inline-tests convention does not apply.
+**`./scripts/gate.sh` covers it too**, skipping with a loud warning when Deno
+is absent so a Windows contributor is not blocked; CI installs Deno so the
+checks are never silently skipped there.
 
 ## Installing
 

@@ -87,7 +87,7 @@ variable "ssh_public_key" {
 
 variable "ssh_private_key_path" {
   type        = string
-  description = "Matching private key. Terraform uses it to copy the receiver up and build it."
+  description = "Matching private key. Terraform uses it to copy the receiver up and restart it."
 }
 
 variable "ssh_allowed_cidr" {
@@ -106,14 +106,24 @@ variable "domain_name" {
   type        = string
   description = <<-EOT
     Hostname the collector answers on, e.g. telemetry.example.com. Point an A
-    record at the reserved IP this stack outputs; Caddy gets a certificate on
-    its own once that resolves, retrying until it does.
+    record at the IP this stack outputs; certbot gets a certificate on its own
+    once that resolves, retrying every ten minutes until it does.
   EOT
 }
 
 variable "acme_email" {
   type        = string
   description = "Contact address for Let's Encrypt expiry notices."
+}
+
+variable "deno_version" {
+  type        = string
+  description = <<-EOT
+    Deno release the collector runs on, e.g. "v2.8.1". Pinned deliberately:
+    an unpinned runtime on a box nobody watches is a surprise waiting for a
+    quiet week. Bump it when you have a reason to.
+  EOT
+  default     = "v2.8.1"
 }
 
 variable "retention_days" {

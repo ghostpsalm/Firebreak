@@ -1,0 +1,17 @@
+{
+  "name": "@firebreak/receiver",
+  "version": "0.2.0",
+  "exports": "./main.ts",
+  "tasks": {
+    "dev": "deno run --allow-net=127.0.0.1:8787 --allow-read --allow-write --allow-env main.ts",
+    "check": "deno fmt --check && deno lint && deno check main.ts && deno test --allow-read --allow-write --allow-env"
+  },
+  "fmt": {
+    "lineWidth": 88
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  }
+}

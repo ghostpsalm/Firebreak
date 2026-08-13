@@ -1,5 +1,5 @@
 output "public_ip" {
-  description = "Point your A record here, then wait for Caddy to get a certificate."
+  description = "Point your A record here; certbot picks it up within ten minutes."
   value       = oci_core_instance.this.public_ip
 }
 
@@ -18,7 +18,7 @@ output "next_steps" {
   value       = <<-EOT
 
     1. DNS      A record: ${var.domain_name} -> ${oci_core_instance.this.public_ip}
-                Caddy retries until it resolves, so this can be done after apply.
+                A timer retries every 10 minutes, so this can be done after apply.
 
     2. Verify   curl https://${var.domain_name}/healthz          (expect: ok)
                 ssh ubuntu@${oci_core_instance.this.public_ip} \

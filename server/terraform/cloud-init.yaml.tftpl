@@ -1,7 +1,8 @@
 #cloud-config
-# Everything the collector needs except the receiver binary itself, which
-# Terraform builds on the box straight afterwards (see null_resource.receiver
-# in main.tf).
+# Everything the collector needs except its own source, which Terraform
+# copies up straight afterwards (see null_resource.receiver in main.tf).
+# There is no build step — the receiver is TypeScript and Deno runs it — so
+# this box is provisioned in a couple of minutes rather than ten.
 #
 # Note for editors: this file goes through Terraform's `templatefile`, so a
 # bare dollar-brace is an interpolation and gets substituted. To write a
@@ -11,22 +12,20 @@ package_update: true
 package_upgrade: true
 
 packages:
-  - build-essential
-  - pkg-config
+  - nginx
+  - certbot
+  - python3-certbot-nginx
   - curl
+  - unzip
   - sqlite3
-  - debian-keyring
-  - debian-archive-keyring
-  - apt-transport-https
   - iptables-persistent
 
-# 1 GB is the Always Free AMD shape, and linking the bundled SQLite needs
-# more than that. Swap turns "the build is killed by the OOM reaper" into
-# "the build is slow", which is the right trade for a one-off.
+# Not needed for a build any more, but a 1 GB box still runs apt upgrades
+# and nginx alongside a V8 heap. Cheap insurance against the OOM reaper.
 swap:
   filename: /swapfile
-  size: 2147483648
-  maxsize: 2147483648
+  size: 1073741824
+  maxsize: 1073741824
 
 users:
   # `default` MUST stay first. A users: list replaces the distro's default
@@ -43,63 +42,76 @@ users:
 write_files:
   # ---- the reverse proxy ----
   #
-  # Structured so a second service is three lines, not a rethink: give it a
-  # path prefix and a loopback port, and add a handle block. Caddy gets and
-  # renews the certificate by itself once DNS points here.
-  - path: /etc/caddy/Caddyfile
+  # HTTP only at this point. certbot rewrites this block in place to add TLS
+  # and a redirect once a certificate exists — see firebreak-certbot below.
+  # Structured so a second service is a location block and a loopback port.
+  - path: /etc/nginx/sites-available/firebreak
     owner: root:root
     permissions: '0644'
     content: |
-      {
-          email ${acme_email}
-          # Errors only. An access log would record full client addresses,
-          # which would quietly undo the truncation the receiver does before
-          # storing anything — the log next to the database must not hold
-          # what the database is careful not to.
-          log {
-              level ERROR
-          }
-      }
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name ${domain_name};
 
-      # Naming the site without a scheme gives it automatic HTTPS: Caddy
-      # obtains and renews a Let's Encrypt certificate, serves 443, and
-      # answers port 80 with nothing but the ACME challenge and a 308 to
-      # https. There is no plaintext route to the receiver.
-      ${domain_name} {
-          encode gzip
+          # Off deliberately. nginx's access log records the full client
+          # address, which would quietly undo the truncation the receiver
+          # does before storing anything — the log next to the database
+          # must not hold what the database is careful not to.
+          access_log off;
 
-          header {
-              # The client already refuses a non-https endpoint and pins
-              # --proto =https across redirects, so this is for anything
-              # else that ever reaches the host.
-              Strict-Transport-Security "max-age=31536000"
-              # Nothing here is a web page; say so and volunteer nothing.
-              -Server
-              X-Content-Type-Options "nosniff"
-          }
+          # The payload is ~300 bytes. The receiver caps the body itself;
+          # this refuses the obvious cases an inch earlier.
+          client_max_body_size 16k;
+
+          add_header Strict-Transport-Security "max-age=31536000" always;
+          add_header X-Content-Type-Options "nosniff" always;
 
           # Firebreak usage ping.
-          handle /v1/* {
-              reverse_proxy 127.0.0.1:8787
+          location /v1/ {
+              proxy_pass http://127.0.0.1:8787;
+              proxy_http_version 1.1;
+              proxy_set_header Host $host;
+              # APPENDS the real peer to anything the client sent, which is
+              # why the receiver reads the LAST entry. Do not change this to
+              # $remote_addr alone without changing ping.ts to match.
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
           }
 
-          handle /healthz {
-              reverse_proxy 127.0.0.1:8787
+          location = /healthz {
+              proxy_pass http://127.0.0.1:8787;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           }
 
           # ---- add further services here ----
           # Each gets its own loopback port and its own path prefix:
           #
-          # handle /thing/* {
-          #     reverse_proxy 127.0.0.1:8788
+          # location /thing/ {
+          #     proxy_pass http://127.0.0.1:8788;
+          #     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           # }
 
-          handle {
-              respond "Firebreak collector." 200
+          location / {
+              default_type text/plain;
+              return 200 "Firebreak collector.\n";
           }
       }
 
+  - path: /etc/nginx/conf.d/firebreak-hardening.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      # Nothing here is a web page; volunteer nothing about the server.
+      server_tokens off;
+
   # ---- the service ----
+  #
+  # The permission flags on ExecStart are the security boundary worth
+  # reading: one listening port, one directory, five environment variables,
+  # and --no-remote so the process cannot pull code off the network. The
+  # deployed receiver has no third-party dependency at all — only local
+  # modules and Deno's built-in node:sqlite.
   - path: /etc/systemd/system/firebreak-receiver.service
     owner: root:root
     permissions: '0644'
@@ -115,16 +127,25 @@ write_files:
       Group=firebreak
       # systemd creates and owns /var/lib/firebreak-receiver
       StateDirectory=firebreak-receiver
-      Environment=FB_BIND=127.0.0.1:8787
+      Environment=FB_HOST=127.0.0.1
+      Environment=FB_PORT=8787
       Environment=FB_DB=/var/lib/firebreak-receiver/telemetry.db
       Environment=FB_RETENTION_DAYS=${retention_days}
       Environment=FB_RATE_PER_HOUR=${rate_per_hour}
-      ExecStart=/usr/local/bin/firebreak-receiver
+      Environment=DENO_NO_UPDATE_CHECK=1
+      Environment=DENO_DIR=/var/lib/firebreak-receiver/.deno
+      ExecStart=/usr/local/deno/bin/deno run \
+          --no-remote \
+          --allow-net=127.0.0.1:8787 \
+          --allow-read=/var/lib/firebreak-receiver \
+          --allow-write=/var/lib/firebreak-receiver \
+          --allow-env=FB_HOST,FB_PORT,FB_DB,FB_RETENTION_DAYS,FB_RATE_PER_HOUR \
+          /opt/firebreak-receiver/main.ts
       Restart=on-failure
       RestartSec=5
 
-      # It parses JSON that arrives from the internet, so it gets as little
-      # of the machine as it can be given and still work.
+      # Deno confines the program; this confines the process. Belt and
+      # braces, because they fail differently.
       NoNewPrivileges=yes
       PrivateTmp=yes
       PrivateDevices=yes
@@ -137,17 +158,61 @@ write_files:
       RestrictNamespaces=yes
       RestrictSUIDSGID=yes
       LockPersonality=yes
-      MemoryDenyWriteExecute=yes
       SystemCallArchitectures=native
       SystemCallFilter=@system-service
 
       [Install]
       WantedBy=multi-user.target
 
-  # ---- a copy off the box ----
+  # ---- certificate issuance ----
   #
-  # The whole dataset is one SQLite file, so "backup" is a file copy. Run it
-  # from your laptop; this is here as the reminder of how.
+  # Run on a timer rather than once at boot, because DNS may not point here
+  # yet when the box is built. It is a no-op the moment a certificate
+  # exists; ordinary renewal is then certbot's own packaged timer.
+  - path: /usr/local/bin/firebreak-certbot
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      DOMAIN=${domain_name}
+      EMAIL=${acme_email}
+      if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+          exit 0
+      fi
+      # --redirect makes port 80 a 308 to https, leaving only the ACME
+      # challenge served in plaintext.
+      certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+          -m "$EMAIL" --redirect --keep-until-expiring
+
+  - path: /etc/systemd/system/firebreak-certbot.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Obtain the collector's TLS certificate once DNS resolves
+      After=network-online.target nginx.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/firebreak-certbot
+
+  - path: /etc/systemd/system/firebreak-certbot.timer
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Keep trying for the collector's certificate until DNS points here
+
+      [Timer]
+      OnBootSec=2min
+      OnUnitActiveSec=10min
+
+      [Install]
+      WantedBy=timers.target
+
+  # ---- a look at the data ----
   - path: /usr/local/bin/firebreak-telemetry-summary
     owner: root:root
     permissions: '0755'
@@ -181,18 +246,19 @@ runcmd:
   - iptables -I INPUT 1 -p tcp --dport 443 -j ACCEPT
   - netfilter-persistent save
 
-  # Caddy from its own apt repository.
-  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-  - apt-get update
-  - apt-get install -y caddy
+  # Deno, pinned. An unpinned runtime on a box you do not watch is a
+  # surprise waiting for a quiet week; bump deno_version deliberately.
+  - curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local/deno sh -s -- -y ${deno_version}
+  - /usr/local/deno/bin/deno --version
 
-  # Rust for the ubuntu user; Terraform builds the receiver as that user.
-  - su - ubuntu -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path"
+  - mkdir -p /opt/firebreak-receiver
+  - rm -f /etc/nginx/sites-enabled/default
+  - ln -sf /etc/nginx/sites-available/firebreak /etc/nginx/sites-enabled/firebreak
+  - nginx -t
+  - systemctl restart nginx
 
-  # The unit is enabled now and started by Terraform once the binary exists.
+  # The unit is enabled now and started by Terraform once main.ts is up.
   # It will restart-loop until then, which is expected and harmless.
   - systemctl daemon-reload
   - systemctl enable firebreak-receiver
-  - systemctl enable --now caddy
-  - systemctl reload caddy || systemctl restart caddy
+  - systemctl enable --now firebreak-certbot.timer

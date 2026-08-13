@@ -1,7 +1,8 @@
 // Firebreak's telemetry collector on an Oracle Always Free host.
 //
-// One small VM running Caddy (TLS, and the place to add more services later)
-// in front of firebreak-receiver on loopback, with SQLite on the boot volume.
+// One small VM running nginx (TLS via certbot, and the place to add more
+// services later) in front of firebreak-receiver on loopback, with SQLite on
+// the boot volume.
 //
 // The shape of it is chosen for a service that must not need operating:
 // no load balancer, no managed database, no container registry, nothing with
@@ -61,7 +62,7 @@ resource "oci_core_route_table" "this" {
 }
 
 // Three ports in, everything out. The receiver itself is not reachable from
-// off-box at all — it binds loopback, so the only way to it is through Caddy.
+// off-box at all — it binds loopback, so the only way to it is through nginx.
 resource "oci_core_security_list" "this" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.this.id
@@ -83,7 +84,7 @@ resource "oci_core_security_list" "this" {
   }
 
   // Needed even though nothing is served on it: Let's Encrypt's HTTP-01
-  // challenge and Caddy's redirect to HTTPS both use it.
+  // challenge and the redirect to HTTPS both use it.
   ingress_security_rules {
     protocol    = "6"
     source      = "0.0.0.0/0"
@@ -150,6 +151,7 @@ resource "oci_core_instance" "this" {
       acme_email     = var.acme_email
       retention_days = var.retention_days
       rate_per_hour  = var.rate_per_hour
+      deno_version   = var.deno_version
     }))
   }
 
@@ -163,26 +165,26 @@ resource "oci_core_instance" "this" {
 
 // ---- the receiver itself ----
 //
-// Shipped as source and built on the box rather than as a binary, so this
-// stack needs no cross-compiler, no musl toolchain and no registry to push
-// to. The trade is a first apply that takes several minutes on the small
-// AMD shape; that is a one-off, and `terraform taint` re-runs just this.
+// Three TypeScript files copied into place. There is no build, no compiler
+// and no artifact registry: Deno runs the source, so deploying a change is
+// a file copy and a restart.
+
+locals {
+  // Only the modules the service actually runs. The *_test.ts files stay on
+  // this machine — the box has no business holding a test suite, and they
+  // are the only things here with a third-party import.
+  receiver_files = ["main.ts", "ping.ts", "db.ts"]
+}
 
 resource "null_resource" "receiver" {
   triggers = {
     instance = oci_core_instance.this.id
     // Any change to the service's own source redeploys it, without touching
     // the host underneath.
-    //
-    // Scoped to src/ and the manifests rather than the whole directory: a
-    // bare "**/*.rs" also matches generated code under target/, which would
-    // make this hash change every time anyone built the receiver locally.
-    source = sha256(join("", concat(
-      [for f in fileset("${path.module}/../receiver", "src/**/*.rs") :
-      filesha256("${path.module}/../receiver/${f}")],
-      [filesha256("${path.module}/../receiver/Cargo.toml")],
-      [filesha256("${path.module}/../receiver/Cargo.lock")],
-    )))
+    source = sha256(join("", [
+      for f in local.receiver_files :
+      filesha256("${path.module}/../receiver/${f}")
+    ]))
   }
 
   connection {
@@ -193,45 +195,47 @@ resource "null_resource" "receiver" {
     timeout     = "10m"
   }
 
-  // cloud-init is still installing rust and Caddy when SSH first answers.
+  // cloud-init is still installing Deno and nginx when SSH first answers.
   provisioner "remote-exec" {
     inline = [
       "cloud-init status --wait || true",
-      "mkdir -p /home/ubuntu/receiver/src",
+      "mkdir -p /home/ubuntu/receiver",
     ]
   }
 
-  // Named files rather than the directory: copying ../receiver wholesale
-  // would drag every local build artifact under target/ up the wire.
+  // Named files rather than the directory, so nothing local — a stray
+  // build directory, an editor's scratch file — is ever swept up the wire.
+  // Listed one by one because `dynamic` does not apply to provisioners;
+  // local.receiver_files is still the single source of truth for the
+  // redeploy trigger above and the install step below.
   provisioner "file" {
-    source      = "${path.module}/../receiver/Cargo.toml"
-    destination = "/home/ubuntu/receiver/Cargo.toml"
-  }
-
-  // Shipped so the box builds the same dependency versions that were tested
-  // here, rather than whatever is newest on the day it is deployed.
-  provisioner "file" {
-    source      = "${path.module}/../receiver/Cargo.lock"
-    destination = "/home/ubuntu/receiver/Cargo.lock"
+    source      = "${path.module}/../receiver/main.ts"
+    destination = "/home/ubuntu/receiver/main.ts"
   }
 
   provisioner "file" {
-    source      = "${path.module}/../receiver/src/"
-    destination = "/home/ubuntu/receiver/src"
+    source      = "${path.module}/../receiver/ping.ts"
+    destination = "/home/ubuntu/receiver/ping.ts"
+  }
+
+  provisioner "file" {
+    source      = "${path.module}/../receiver/db.ts"
+    destination = "/home/ubuntu/receiver/db.ts"
   }
 
   provisioner "remote-exec" {
     inline = [
       "set -euo pipefail",
-      "cd /home/ubuntu/receiver",
-      "$HOME/.cargo/bin/cargo build --release",
-      "sudo install -m 0755 target/release/firebreak-receiver /usr/local/bin/firebreak-receiver",
+      "sudo install -d -m 0755 /opt/firebreak-receiver",
+      "sudo install -m 0644 /home/ubuntu/receiver/*.ts /opt/firebreak-receiver/",
       "sudo systemctl restart firebreak-receiver",
       "sudo systemctl is-active --quiet firebreak-receiver",
-      // Prove it end to end rather than trusting that the unit started:
-      // a service that is 'active' but not answering is the failure this
+      // Prove it end to end rather than trusting that the unit started: a
+      // service that is 'active' but not answering is the failure this
       // whole stack exists to avoid discovering months later.
-      "for i in $(seq 1 10); do curl -fsS http://127.0.0.1:8787/healthz && break || sleep 2; done",
+      "for i in $(seq 1 15); do curl -fsS http://127.0.0.1:8787/healthz && break || sleep 2; done",
+      // And prove the proxy in front of it is wired up too.
+      "curl -fsS http://127.0.0.1/healthz",
     ]
   }
 }

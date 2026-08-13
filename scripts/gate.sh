@@ -28,15 +28,24 @@ fi
 echo "== cargo test =="
 cargo test
 
-# The collector is its own crate under server/, so none of the above touches
-# it. It is a service that parses input from the internet — the last thing it
+# The collector is a separate Deno service under server/, so none of the
+# above touches it. It parses input from the internet — the last thing it
 # should be is the unlinted corner of the repo.
+#
+# Skipped with a warning rather than failing when Deno is absent: a Windows
+# contributor building the client should not be blocked by the collector's
+# toolchain. CI has Deno, so the checks are never quietly skipped there.
 echo "== receiver (server/receiver) =="
-(
-    cd server/receiver
-    cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test
-)
+if command -v deno >/dev/null 2>&1; then
+    (
+        cd server/receiver
+        deno fmt --check
+        deno lint
+        deno check main.ts
+        deno test --allow-read --allow-write --allow-env
+    )
+else
+    echo "!! deno not installed — collector NOT checked (see server/README.md)"
+fi
 
 echo "== gate passed =="
