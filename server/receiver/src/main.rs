@@ -110,7 +110,8 @@ fn main() {
 }
 
 fn handle(stream: &TcpStream, db: &db::Db, limiter: &Mutex<RateLimiter>) {
-    let req = match http::read_request(stream) {
+    let mut reader = std::io::BufReader::new(stream);
+    let req = match http::read_request(&mut reader) {
         Ok(r) => r,
         Err(http::ReadError::TooLarge) => return http::respond(stream, 413, "too large\n"),
         Err(http::ReadError::Malformed) => return http::respond(stream, 400, "malformed\n"),

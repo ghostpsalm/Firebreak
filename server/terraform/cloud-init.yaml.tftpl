@@ -56,8 +56,22 @@ write_files:
           }
       }
 
+      # Naming the site without a scheme gives it automatic HTTPS: Caddy
+      # obtains and renews a Let's Encrypt certificate, serves 443, and
+      # answers port 80 with nothing but the ACME challenge and a 308 to
+      # https. There is no plaintext route to the receiver.
       ${domain_name} {
           encode gzip
+
+          header {
+              # The client already refuses a non-https endpoint and pins
+              # --proto =https across redirects, so this is for anything
+              # else that ever reaches the host.
+              Strict-Transport-Security "max-age=31536000"
+              # Nothing here is a web page; say so and volunteer nothing.
+              -Server
+              X-Content-Type-Options "nosniff"
+          }
 
           # Firebreak usage ping.
           handle /v1/* {

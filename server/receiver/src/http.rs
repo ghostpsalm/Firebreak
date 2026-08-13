@@ -5,7 +5,7 @@
 //! anything surprising early and cheaply. Every limit below is a refusal
 //! rather than an allocation.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 
 /// Largest request line + headers we will read before giving up. A proxied
@@ -35,22 +35,33 @@ pub enum ReadError {
 
 /// Read one request. Returns `Err` rather than panicking on anything odd —
 /// this is the internet-facing edge, even with a proxy in front.
-pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
-    let mut reader = BufReader::new(stream);
-
+///
+/// Takes a `BufRead` rather than the socket so the limits below can actually
+/// be tested against a hostile stream instead of asserted in a comment.
+pub fn read_request(reader: &mut impl BufRead) -> Result<Request, ReadError> {
     let mut head = String::new();
+    // The budget is applied *through* the reader, not checked after the
+    // fact. `read_line` alone grows its String until it finds a newline, so
+    // a client that sends megabytes without one would be answered with an
+    // allocation rather than a refusal.
+    let mut budget = MAX_HEAD;
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|_| ReadError::Io)?;
+        let n = reader
+            .by_ref()
+            .take(budget as u64)
+            .read_line(&mut line)
+            .map_err(|_| ReadError::Io)?;
         if n == 0 {
             return Err(ReadError::Io);
         }
+        budget -= n;
         head.push_str(&line);
-        if head.len() > MAX_HEAD {
-            return Err(ReadError::TooLarge);
-        }
         if line == "\r\n" || line == "\n" {
             break;
+        }
+        if budget == 0 {
+            return Err(ReadError::TooLarge);
         }
     }
 
@@ -118,4 +129,95 @@ pub fn respond(mut stream: &TcpStream, status: u16, body: &str) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(raw: &[u8]) -> Result<Request, ReadError> {
+        read_request(&mut std::io::BufReader::new(raw))
+    }
+
+    #[test]
+    fn a_proxied_ping_parses() {
+        let r = parse(
+            b"POST /v1/ping HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 9.9.9.9, 203.0.113.4\r\n\
+              Content-Length: 2\r\n\r\n{}",
+        )
+        .expect("should parse");
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.path, "/v1/ping");
+        assert_eq!(r.body, b"{}");
+        assert_eq!(r.forwarded_for.as_deref(), Some("9.9.9.9, 203.0.113.4"));
+    }
+
+    /// The bug this test exists for: `read_line` grows until it finds a
+    /// newline, so a client that never sends one used to be answered with
+    /// an allocation the size of whatever it felt like sending.
+    #[test]
+    fn a_header_line_with_no_newline_is_refused_not_buffered() {
+        let mut raw = b"POST /v1/ping HTTP/1.1\r\nX: ".to_vec();
+        raw.extend(std::iter::repeat_n(b'A', MAX_BODY * 8));
+        assert!(matches!(parse(&raw), Err(ReadError::TooLarge)));
+    }
+
+    #[test]
+    fn too_many_headers_are_refused() {
+        let mut raw = b"POST /v1/ping HTTP/1.1\r\n".to_vec();
+        for i in 0..2000 {
+            raw.extend(format!("X-Pad-{i}: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n").bytes());
+        }
+        raw.extend(b"\r\n");
+        assert!(matches!(parse(&raw), Err(ReadError::TooLarge)));
+    }
+
+    #[test]
+    fn an_oversize_body_is_refused_before_it_is_read() {
+        let raw = format!(
+            "POST /v1/ping HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert!(matches!(parse(raw.as_bytes()), Err(ReadError::TooLarge)));
+    }
+
+    #[test]
+    fn a_negative_or_junk_content_length_is_malformed() {
+        for cl in ["-1", "abc", "99999999999999999999"] {
+            let raw = format!("POST /v1/ping HTTP/1.1\r\nContent-Length: {cl}\r\n\r\n");
+            assert!(
+                matches!(parse(raw.as_bytes()), Err(ReadError::Malformed)),
+                "should have rejected Content-Length: {cl}"
+            );
+        }
+    }
+
+    /// A body shorter than the declared length must not yield a request with
+    /// a half-filled buffer that then parses as something.
+    #[test]
+    fn a_truncated_body_is_an_error() {
+        let raw = b"POST /v1/ping HTTP/1.1\r\nContent-Length: 100\r\n\r\nshort";
+        assert!(matches!(parse(raw), Err(ReadError::Io)));
+    }
+
+    #[test]
+    fn a_query_string_does_not_change_the_route() {
+        let r = parse(b"GET /healthz?x=../../etc/passwd HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(r.path, "/healthz");
+    }
+
+    #[test]
+    fn header_names_are_case_insensitive() {
+        let r = parse(
+            b"POST /v1/ping HTTP/1.1\r\nCONTENT-LENGTH: 2\r\nx-forwarded-for: 1.2.3.4\r\n\r\nhi",
+        )
+        .unwrap();
+        assert_eq!(r.body, b"hi");
+        assert_eq!(r.forwarded_for.as_deref(), Some("1.2.3.4"));
+    }
+
+    #[test]
+    fn an_empty_stream_is_not_a_request() {
+        assert!(matches!(parse(b""), Err(ReadError::Io)));
+    }
 }

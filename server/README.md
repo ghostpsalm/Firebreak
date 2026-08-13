@@ -124,8 +124,18 @@ Terraform renders:
   The VCN security list opens 22, 80 and 443 and nothing else, and the
   instance's own iptables is opened to match — both are needed, and
   forgetting the second is the classic reason ACME times out.
+- **TLS only.** Caddy gets and renews a Let's Encrypt certificate by itself;
+  port 80 carries nothing but the ACME challenge and a 308 to https, and HSTS
+  is set. The client will not talk to a non-`https://` endpoint in the first
+  place — WinHTTP is given `WINHTTP_FLAG_SECURE` on 443, curl is pinned with
+  `--proto =https --proto-redir =https`, and an endpoint that does not start
+  `https://` disables the feature outright.
 - **Everything is bounded**: connection count, header size, body size, socket
-  timeouts and a per-network rate limit. A bad day costs a refusal.
+  timeouts and a per-network rate limit. A bad day costs a refusal. The head
+  limit is applied *through* the reader rather than checked afterwards —
+  `read_line` on its own will happily buffer megabytes looking for a newline
+  that never comes, and `a_header_line_with_no_newline_is_refused_not_buffered`
+  is the regression test for exactly that.
 - **Unknown JSON fields are a rejection**, not a stored curiosity. The
   collector cannot be turned into somewhere to put arbitrary data.
 - **The daily-uniqueness rule is enforced in the database**, not trusted to
