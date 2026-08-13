@@ -29,6 +29,11 @@ swap:
   maxsize: 2147483648
 
 users:
+  # `default` MUST stay first. A users: list replaces the distro's default
+  # set rather than adding to it, so dropping this line means the `ubuntu`
+  # user is never created, the injected SSH key has nowhere to land, and the
+  # box locks out both Terraform's provisioner and you on first boot.
+  - default
   - name: firebreak
     system: true
     shell: /usr/sbin/nologin
