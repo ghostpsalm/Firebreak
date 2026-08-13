@@ -47,6 +47,11 @@ users:
     gecos: CI deploy account (forced command only)
     shell: /bin/bash
     lock_passwd: true
+    # Only so the deploy script can quote the service's journal back into
+    # the CI log when a restart fails. It changes nothing about what the
+    # key can *do* — the forced command is still the only entry point, and
+    # the script decides what is printed.
+    groups: [systemd-journal]
 
 write_files:
   # ---- the reverse proxy ----
@@ -248,7 +253,14 @@ write_files:
 
       # A green pipeline over a collector that stopped answering is worse
       # than a red one, so this fails loudly and puts the old code back.
-      log "did not come back healthy — rolling back"
+      #
+      # The service's own log goes out on stdout first, so the reason lands
+      # in the CI run alongside the failure. The deploy key cannot open a
+      # shell to go and look afterwards — by design — so if this does not
+      # print it, nobody ever sees it.
+      log "did not come back healthy — rolling back. Its last words:"
+      journalctl -u firebreak-receiver -n 40 --no-pager 2>&1 |
+          sed 's/^/    /' || log "(could not read the journal)"
       if compgen -G "$BACKUP/*.ts" >/dev/null; then
           install -m 0644 "$BACKUP"/*.ts "$LIVE"/
           sudo /usr/bin/systemctl restart firebreak-receiver
@@ -305,6 +317,89 @@ write_files:
 
       [Install]
       WantedBy=timers.target
+
+  # ---- keep the evidence ----
+  #
+  # A volatile journal is emptied by the reboot, which is very often the
+  # thing you wanted to read about. Capped so it can never be the reason a
+  # 50 GB boot volume fills up.
+  - path: /etc/systemd/journald.conf.d/firebreak.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Journal]
+      Storage=persistent
+      SystemMaxUse=200M
+      SystemMaxFileSize=20M
+      MaxRetentionSec=1month
+
+  # ---- what to send when something is wrong ----
+  #
+  # The counterpart of the client's --export-support: one command that
+  # gathers every log that matters, so diagnosing a bad build is not a
+  # memory test about which of six files to look in.
+  - path: /usr/local/bin/firebreak-collector-support
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Everything needed to diagnose this host, on stdout. Run with sudo.
+      #   ssh ubuntu@<ip> 'sudo firebreak-collector-support' > support.txt
+      #
+      # Review before sharing: nginx and certbot error logs can quote client
+      # addresses, which nothing else here does.
+      set -uo pipefail
+
+      section() { printf '\n===== %s =====\n' "$*"; }
+      run() { section "$*"; "$@" 2>&1 || echo "(command failed: $*)"; }
+
+      echo "firebreak collector support bundle"
+      echo "generated: $(date -Is)"
+
+      run uname -a
+      run uptime
+      run /usr/local/deno/bin/deno --version
+
+      section "cloud-init (did the box build correctly?)"
+      cloud-init status --long 2>&1 || true
+      section "cloud-init output, last 120 lines"
+      tail -n 120 /var/log/cloud-init-output.log 2>&1 || true
+
+      run systemctl status firebreak-receiver --no-pager --full
+      section "receiver journal, last 200 lines"
+      journalctl -u firebreak-receiver -n 200 --no-pager 2>&1 || true
+
+      run systemctl status nginx --no-pager
+      section "nginx error log, last 60 lines"
+      tail -n 60 /var/log/nginx/error.log 2>&1 || true
+      run nginx -t
+
+      section "certificate"
+      certbot certificates 2>&1 || true
+      section "letsencrypt log, last 60 lines"
+      tail -n 60 /var/log/letsencrypt/letsencrypt.log 2>&1 || true
+      run systemctl status firebreak-certbot.timer --no-pager
+
+      section "what is deployed"
+      ls -la /opt/firebreak-receiver 2>&1
+      sha256sum /opt/firebreak-receiver/*.ts 2>&1
+
+      section "listening sockets"
+      ss -ltnp 2>&1 || true
+      run iptables -S
+
+      section "disk and memory"
+      df -h / 2>&1
+      free -m 2>&1
+
+      section "database (shape only, no contents)"
+      DB=/var/lib/firebreak-receiver/telemetry.db
+      if [ -f "$DB" ]; then
+          ls -la "$DB"*
+          sqlite3 "$DB" "SELECT COUNT(*) AS rows, MIN(day) AS first, MAX(day) AS last FROM ping;" 2>&1
+      else
+          echo "no database yet — nothing has been received"
+      fi
 
   # ---- a look at the data ----
   - path: /usr/local/bin/firebreak-telemetry-summary
@@ -366,6 +461,9 @@ runcmd:
       echo "no deploy_public_key set - CI deployment is not configured"
     fi
   - visudo -cf /etc/sudoers.d/firebreak-deploy
+
+  # Apply the journal settings now, so the first boot's own logs survive it.
+  - systemctl restart systemd-journald
 
   - rm -f /etc/nginx/sites-enabled/default
   - ln -sf /etc/nginx/sites-available/firebreak /etc/nginx/sites-enabled/firebreak

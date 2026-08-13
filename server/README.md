@@ -157,6 +157,50 @@ if Deno is not installed so a Windows contributor working on the client is
 not blocked by the collector's toolchain. CI installs Deno, so they are never
 skipped there.
 
+## When something goes wrong
+
+One command gathers everything worth reading, so diagnosing a bad build is
+not a memory test about which of six log files to open:
+
+```bash
+ssh ubuntu@<ip> 'sudo firebreak-collector-support' > support.txt
+```
+
+It reports cloud-init's status and output, the receiver's unit state and
+journal, nginx status and error log, the certificate and certbot's log, what
+is actually deployed and its checksums, listening sockets, iptables, disk,
+memory, and the database's row count and date range — never its contents.
+**Review before sharing**: nginx and certbot error logs can quote client
+addresses, which nothing else on this host does.
+
+Where each failure announces itself:
+
+| Failure | Where you see it |
+|---|---|
+| Provisioning broke | `terraform apply` stops and prints the last 120 lines of `cloud-init-output.log`. It does **not** report success over a half-built box. |
+| Deploy broke | The GitHub Actions run. If the restart failed, the deploy script quotes the service's last 40 journal lines into the CI log — the deploy key cannot open a shell to go and look afterwards, so if it did not print it, nobody would ever see it. |
+| Certificate never arrived | `systemctl status firebreak-certbot.timer` and `/var/log/letsencrypt/`. Almost always DNS not resolving yet, or port 80 closed. |
+| Collector misbehaving in service | `journalctl -u firebreak-receiver`. It logs each accepted ping, every rejection with its reason, retention sweeps, and any unhandled request failure with a stack. |
+
+Logs are **persistent and capped** (`Storage=persistent`, 200 MB, one month):
+a volatile journal is emptied by the reboot, which is very often the thing
+you wanted to read about, and an uncapped one is a way to fill the disk.
+
+Live view while you work:
+
+```bash
+ssh ubuntu@<ip> 'sudo journalctl -u firebreak-receiver -f'
+```
+
+The log prints the truncated network, never a full address.
+
+To keep a record of the build itself, tee it — Terraform's output is
+otherwise only ever on your terminal:
+
+```bash
+terraform apply 2>&1 | tee "apply-$(date +%Y%m%d-%H%M).log"
+```
+
 ### If the ARM shape is wanted
 
 `VM.Standard.A1.Flex` is a far better machine and also free, but free-tier

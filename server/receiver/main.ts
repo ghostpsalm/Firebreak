@@ -208,8 +208,20 @@ if (import.meta.main) {
     onListen: () =>
       console.log(
         `firebreak-receiver listening on ${host}:${port}, db ${dbPath}, ` +
-          `retention ${retentionDays}d`,
+          `retention ${retentionDays}d (deno ${Deno.version.deno})`,
       ),
+    // Without this an unexpected throw becomes a bare 500 with nothing
+    // written down — the failure mode that is hardest to diagnose later,
+    // because the only evidence is a client reporting an error you cannot
+    // see. No request content is logged, only where it broke.
+    onError: (e) => {
+      console.error(
+        `error: unhandled request failure: ${
+          e instanceof Error ? e.stack ?? e.message : e
+        }`,
+      );
+      return text(500, "error\n");
+    },
   }, (req, info) => serve(req, info.remoteAddr.hostname));
 
   // systemd sends SIGTERM on stop and restart; close the database rather

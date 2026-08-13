@@ -197,10 +197,27 @@ resource "null_resource" "receiver" {
   }
 
   // cloud-init is still installing Deno and nginx when SSH first answers.
+  //
+  // Its result is checked rather than discarded. `|| true` here used to mean
+  // a half-built box reported a successful apply, and the confusing failure
+  // surfaced somewhere else entirely — so a real failure now prints the log
+  // that explains it and stops. Exit 2 is "degraded": something optional did
+  // not finish, which is worth saying out loud but not worth failing over.
   provisioner "remote-exec" {
     inline = [
-      "cloud-init status --wait || true",
-      "mkdir -p /home/ubuntu/receiver",
+      <<-EOT
+        cloud-init status --wait; rc=$?
+        if [ $rc -eq 1 ] || [ $rc -gt 2 ]; then
+          echo "--- cloud-init failed (exit $rc); last 120 lines ---"
+          sudo tail -n 120 /var/log/cloud-init-output.log
+          echo "--- full detail: sudo firebreak-collector-support ---"
+          exit 1
+        fi
+        if [ $rc -eq 2 ]; then
+          echo "WARNING: cloud-init reports degraded; check firebreak-collector-support"
+        fi
+        mkdir -p /home/ubuntu/receiver
+      EOT
     ]
   }
 
