@@ -889,24 +889,264 @@ fn scrim(ctx: &egui::Context, id: &str) {
         });
 }
 
+/// The width About and Updates share. Both are one shell in two states, so
+/// the number lives once.
+const DIALOG_W: f32 = 480.0;
+
 /// One dialog shape, so About and Updates are the same object in two
 /// states rather than two windows that drifted apart.
-fn dialog_window(ctx: &egui::Context, id: &str, body: impl FnOnce(&mut egui::Ui)) {
+///
+/// `width` is a parameter only because the consent dialog is narrower — its
+/// copy is hand-wrapped to its own measure. Everything else passes
+/// [`DIALOG_W`].
+fn dialog_window(ctx: &egui::Context, id: &str, width: f32, body: impl FnOnce(&mut egui::Ui)) {
     egui::Window::new(id)
         .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .fixed_size(Vec2::new(360.0, 0.0))
+        .fixed_size(Vec2::new(width, 0.0))
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .frame(
             egui::Frame::none()
                 .fill(t::TABLE_BG())
-                .stroke(Stroke::new(1.0_f32, t::CONTROL_BORDER())),
+                .stroke(Stroke::new(1.0_f32, t::BORDER()))
+                .rounding(egui::Rounding::same(12.0))
+                .shadow(egui::epaint::Shadow {
+                    offset: Vec2::new(0.0, 18.0),
+                    blur: 44.0,
+                    spread: -18.0,
+                    color: Color32::from_black_alpha(87),
+                }),
         )
         .show(ctx, |ui| body(ui));
 }
 
-/// A row at the dialogs' shared left margin.
+/// The dialog body: everything above the footer bar, at the shared padding.
+fn dialog_body(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .inner_margin(egui::Margin {
+            left: 32.0,
+            right: 32.0,
+            top: 32.0,
+            bottom: 28.0,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui);
+        });
+}
+
+/// The footer action bar: its own ground, a hairline above it, and the
+/// buttons laid out right-to-left so the primary sits at the trailing edge.
+///
+/// It deliberately sits *outside* [`dialog_body`]'s padding — the bar spans
+/// the full width of the dialog and only its contents are inset.
+fn dialog_footer(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    let framed = egui::Frame::none()
+        .fill(t::DIALOG_FOOTER())
+        .inner_margin(egui::Margin {
+            left: 24.0,
+            right: 24.0,
+            top: 16.0,
+            bottom: 16.0,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), body);
+            });
+        });
+    // Only the top edge is drawn: a full stroke would box the bar in and
+    // fight the dialog's own rounded border at the two bottom corners.
+    let r = framed.response.rect;
+    ui.painter().hline(
+        r.x_range(),
+        r.top(),
+        Stroke::new(1.0_f32, t::BORDER_LIGHT()),
+    );
+}
+
+/// A sunken block — the facts grid in About, the version comparison in
+/// Updates. Same recessed panel in both.
+fn sunken_block(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(t::CHROME())
+        .stroke(Stroke::new(1.0_f32, t::BORDER_LIGHT()))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin {
+            left: 18.0,
+            right: 18.0,
+            top: 16.0,
+            bottom: 16.0,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui);
+        });
+}
+
+/// A small uppercase status pill — CURRENT / UPDATE beside the version.
+fn status_pill(ui: &mut egui::Ui, text: &str, fg: Color32, bg: Color32, border: Color32) {
+    let font = t::mono(10.0);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
+    let size = Vec2::new(galley.size().x + 12.0, galley.size().y + 8.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect(rect, 4.0, bg, Stroke::new(1.0_f32, border));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, fg);
+}
+
+/// The 40px status badge at the head of the Updates dialog. The glyph is
+/// drawn rather than typed: the bundled font has no icon set, and a stray
+/// emoji would render differently on every host.
+fn status_badge(ui: &mut egui::Ui, glyph: BadgeGlyph, fg: Color32, bg: Color32, border: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+    ui.painter()
+        .rect(rect, 10.0, bg, Stroke::new(1.0_f32, border));
+    let c = rect.center();
+    let s = Stroke::new(2.0_f32, fg);
+    match glyph {
+        BadgeGlyph::Check => {
+            let p = ui.painter();
+            p.line_segment([c + Vec2::new(-5.0, 0.0), c + Vec2::new(-1.5, 4.0)], s);
+            p.line_segment([c + Vec2::new(-1.5, 4.0), c + Vec2::new(5.5, -4.5)], s);
+        }
+        BadgeGlyph::Down => {
+            let p = ui.painter();
+            p.line_segment([c + Vec2::new(0.0, -6.0), c + Vec2::new(0.0, 4.0)], s);
+            p.line_segment([c + Vec2::new(-4.5, -0.5), c + Vec2::new(0.0, 4.5)], s);
+            p.line_segment([c + Vec2::new(4.5, -0.5), c + Vec2::new(0.0, 4.5)], s);
+            p.line_segment([c + Vec2::new(-5.5, 7.0), c + Vec2::new(5.5, 7.0)], s);
+        }
+        BadgeGlyph::Refresh => {
+            // three-quarter ring with a tick, so it reads as "in progress"
+            // without needing animation to be legible
+            let p = ui.painter();
+            let r = 6.0;
+            let mut pts = Vec::new();
+            for i in 0..=24 {
+                let a = std::f32::consts::TAU * (i as f32 / 32.0) - 0.6;
+                pts.push(c + Vec2::new(r * a.cos(), r * a.sin()));
+            }
+            p.add(egui::Shape::line(pts, s));
+            p.line_segment(
+                [c + Vec2::new(r - 3.0, -4.5), c + Vec2::new(r + 1.5, -3.0)],
+                s,
+            );
+        }
+        BadgeGlyph::Alert => {
+            let p = ui.painter();
+            p.line_segment([c + Vec2::new(0.0, -6.0), c + Vec2::new(0.0, 1.5)], s);
+            p.circle_filled(c + Vec2::new(0.0, 5.0), 1.6, fg);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BadgeGlyph {
+    Check,
+    Down,
+    Refresh,
+    Alert,
+}
+
+/// A label/value pair in a sunken block: uppercase mono label, mono value
+/// that truncates rather than widening the dialog.
+fn fact_row(ui: &mut egui::Ui, label: &str, value: &str, label_w: f32, link: bool) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.add_space(0.0);
+        let (r, _) = ui.allocate_exact_size(Vec2::new(label_w, 18.0), Sense::hover());
+        ui.painter().text(
+            r.left_center(),
+            Align2::LEFT_CENTER,
+            label,
+            t::mono(12.0),
+            t::FAINT(),
+        );
+        let colour = if link { t::ACCENT() } else { t::INK() };
+        let avail = ui.available_width();
+        let text = truncate_to(ui, value, t::mono(13.0), avail);
+        let resp = ui.add(
+            egui::Label::new(egui::RichText::new(&text).font(t::mono(13.0)).color(colour))
+                .sense(if link { Sense::click() } else { Sense::hover() }),
+        );
+        // The full string is never lost — a truncated host or URL is still
+        // readable on hover.
+        if text != value {
+            resp.clone().on_hover_text(value);
+        }
+        if link {
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            clicked = resp.clicked();
+        }
+    });
+    clicked
+}
+
+/// Shorten `text` with an ellipsis until it fits `max` at `font`.
+fn truncate_to(ui: &egui::Ui, text: &str, font: egui::FontId, max: f32) -> String {
+    let width = |s: &str| {
+        ui.painter()
+            .layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    if width(text) <= max {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut n = chars.len();
+    while n > 1 {
+        n -= 1;
+        let s: String = chars[..n].iter().collect::<String>() + "…";
+        if width(&s) <= max {
+            return s;
+        }
+    }
+    "…".into()
+}
+
+/// The dialogs' primary button: filled, rounded, with the design's padding.
+/// Deliberately separate from [`primary_button`], which the rest of the app
+/// uses — restyling every button in the product was not the ask.
+fn dialog_button(ui: &mut egui::Ui, label: &str, primary: bool, enabled: bool) -> egui::Response {
+    // A disabled button is filled too, so its label stays white either way.
+    let fg = if primary || !enabled {
+        Color32::WHITE
+    } else {
+        t::INK()
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), t::medium(14.0), fg);
+    let size = Vec2::new(galley.size().x + 40.0, galley.size().y + 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (fill, border) = match (primary, enabled) {
+        (_, false) => (t::DISABLED(), t::DISABLED()),
+        (true, _) if resp.is_pointer_button_down_on() => {
+            (t::ACCENT().gamma_multiply(0.85), t::ACCENT())
+        }
+        (true, _) if resp.hovered() => (t::ACCENT().gamma_multiply(1.1), t::ACCENT()),
+        (true, _) => (t::ACCENT(), t::ACCENT()),
+        (false, _) if resp.hovered() => (t::HOVER_WASH(), t::CONTROL_BORDER()),
+        (false, _) => (t::TABLE_BG(), t::CONTROL_BORDER()),
+    };
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter()
+        .rect(rect, 7.0, fill, Stroke::new(1.0_f32, border));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, fg);
+    resp
+}
+
+/// A row at the dialogs' shared left margin. Used only by the consent
+/// dialog now — About and Updates get their padding from [`dialog_body`].
 fn indented(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.add_space(20.0);
@@ -922,106 +1162,167 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
     let mut open = true;
     let mut open_updates = false;
     let mut open_consent = false;
-    dialog_window(ctx, "about", |ui| {
-        ui.add_space(18.0);
-        let logo = app.logo_texture(ctx);
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
-            ui.painter().image(
-                logo.id(),
-                r,
-                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Firebreak")
-                        .font(t::semibold(15.0))
-                        .color(t::INK()),
+    let mut open_repo = false;
+
+    // The pill is derived from the last check rather than stored: no check
+    // yet means no claim, so no pill at all.
+    enum Pill {
+        None,
+        Current,
+        Update,
+    }
+    let pill = match &*app.update.lock().unwrap() {
+        crate::ui::UpdateState::UpToDate(_) => Pill::Current,
+        crate::ui::UpdateState::Available(_) | crate::ui::UpdateState::Ready(_) => Pill::Update,
+        _ => Pill::None,
+    };
+
+    dialog_window(ctx, "about", DIALOG_W, |ui| {
+        dialog_body(ui, |ui| {
+            // ---- identity row ----
+            let logo = app.logo_texture_large(ctx);
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+                ui.painter().image(
+                    logo.id(),
+                    r,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
                 );
-                ui.label(
-                    egui::RichText::new(format!("Version {}", crate::pipeline::version_string()))
-                        .font(t::mono(11.0))
-                        .color(t::SECONDARY()),
-                );
+                ui.add_space(18.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Firebreak")
+                            .font(t::semibold(27.0))
+                            .color(t::INK()),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("v{}", crate::pipeline::version_string()))
+                                .font(t::mono(13.0))
+                                .color(t::SECONDARY()),
+                        );
+                        ui.add_space(8.0);
+                        match pill {
+                            Pill::Current => status_pill(
+                                ui,
+                                "CURRENT",
+                                t::LIVE_TEXT(),
+                                t::LIVE_BG(),
+                                t::LIVE_BORDER(),
+                            ),
+                            Pill::Update => status_pill(
+                                ui,
+                                "UPDATE",
+                                t::ACCENT(),
+                                t::ACCENT_TINT(),
+                                t::ACCENT_TINT_BORDER(),
+                            ),
+                            Pill::None => {}
+                        }
+                    });
+                });
             });
-        });
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
+
+            ui.add_space(24.0);
+
+            // ---- tagline + description ----
             ui.label(
                 egui::RichText::new("Observe first. Enforce with confidence.")
-                    .font(t::semibold(11.5))
+                    .font(t::semibold(17.0))
                     .color(t::ACCENT()),
             );
-        });
-        ui.add_space(2.0);
-        for line in [
-            "Turn real network activity into least-privilege firewall policy.",
-            "Correlates WFP connection audit events (5156/5157) with firewall",
-            "rules to find unused and over-broad rules.",
-        ] {
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                ui.label(
-                    egui::RichText::new(line)
-                        .font(t::sans(11.5))
-                        .color(t::SECONDARY()),
-                );
-            });
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
+            ui.add_space(12.0);
             ui.label(
-                egui::RichText::new(format!("Host: {}", app.ctx_info.hostname))
-                    .font(t::mono(11.0))
-                    .color(t::TERTIARY()),
+                egui::RichText::new(
+                    "Turns real network activity into least-privilege firewall policy. \
+                     Correlates connection audit events with firewall rules to find \
+                     unused and over-broad rules.",
+                )
+                .font(t::sans(15.0))
+                .color(t::SECONDARY()),
             );
-        });
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            if link(ui, "Check for updates…", t::ACCENT()).clicked() {
-                open_updates = true;
-            }
-        });
-        // Only where there is a collector to send to — a build that cannot
-        // report should not advertise a setting that does nothing.
-        if crate::telemetry::configured() {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                ui.label(
-                    egui::RichText::new(if app.telemetry_on {
-                        "Usage pings: on"
-                    } else {
-                        "Usage pings: off"
-                    })
-                    .font(t::sans(11.5))
-                    .color(t::SECONDARY()),
+
+            ui.add_space(24.0);
+
+            // ---- facts ----
+            // Host carries the backend in parentheses everywhere else in the
+            // app, and Backend has its own row here, so strip exactly that
+            // suffix rather than guessing at the punctuation.
+            let backend = app.ctx_info.backend.clone();
+            let host = app
+                .ctx_info
+                .hostname
+                .strip_suffix(&format!(" ({backend})"))
+                .unwrap_or(&app.ctx_info.hostname)
+                .to_string();
+            sunken_block(ui, |ui| {
+                let lw = 74.0;
+                fact_row(ui, "HOST", &host, lw, false);
+                ui.add_space(8.0);
+                fact_row(
+                    ui,
+                    "BACKEND",
+                    if backend.is_empty() { "—" } else { &backend },
+                    lw,
+                    false,
                 );
                 ui.add_space(8.0);
-                if link(ui, "Change…", t::ACCENT()).clicked() {
-                    open_consent = true;
-                }
+                open_repo = fact_row(
+                    ui,
+                    "SOURCE",
+                    &format!("github.com/{}", crate::update::REPO),
+                    lw,
+                    true,
+                );
             });
-        }
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(20.0);
-                if primary_button(ui, "Close", t::ACCENT()).clicked() {
-                    open = false;
+
+            // Telemetry state, where this build can report at all. Kept as a
+            // quiet line under the facts rather than a fourth fact row: it is
+            // a setting the operator can change, not a fact about the host.
+            if crate::telemetry::configured() {
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(if app.telemetry_on {
+                            "Usage pings: on"
+                        } else {
+                            "Usage pings: off"
+                        })
+                        .font(t::sans(13.0))
+                        .color(t::SECONDARY()),
+                    );
+                    ui.add_space(8.0);
+                    if link(ui, "Change…", t::ACCENT()).clicked() {
+                        open_consent = true;
+                    }
+                });
+            }
+        });
+
+        // ---- footer ----
+        dialog_footer(ui, |ui| {
+            if dialog_button(ui, "Close", true, true).clicked() {
+                open = false;
+            }
+            // Laid out right-to-left, so this lands on the left of the bar.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                if link(ui, "Check for updates…", t::ACCENT()).clicked() {
+                    open_updates = true;
                 }
             });
         });
-        ui.add_space(16.0);
     });
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        open = false;
+    }
     if !open {
         app.about_open = false;
+    }
+    if open_repo {
+        open_url(&format!("https://github.com/{}", crate::update::REPO));
     }
     // one dialog at a time: About steps aside for the one it opened
     if open_updates {
@@ -1032,6 +1333,26 @@ fn about_box(app: &mut App, ctx: &egui::Context) {
     if open_consent {
         app.about_open = false;
         app.consent_open = true;
+    }
+}
+
+/// Open a URL in the system browser.
+///
+/// Spawned by absolute path through `syspath`, never through a shell: this
+/// process runs elevated, and handing a URL to a shell in that position is
+/// how a quoting bug becomes a command.
+fn open_url(url: &str) {
+    #[cfg(windows)]
+    {
+        let _ = crate::syspath::command(crate::syspath::system32_tool("cmd.exe"))
+            .args(["/c", "start", "", url])
+            .spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(open) = crate::syspath::system_tool("xdg-open") {
+            let _ = crate::syspath::command(open).arg(url).spawn();
+        }
     }
 }
 
@@ -1055,7 +1376,7 @@ fn consent_box(app: &mut App, ctx: &egui::Context) {
     let mut answer: Option<bool> = None;
     let mut dismissed = false;
 
-    dialog_window(ctx, "consent", |ui| {
+    dialog_window(ctx, "consent", 360.0, |ui| {
         ui.add_space(18.0);
         indented(ui, |ui| {
             ui.label(
@@ -1204,170 +1525,272 @@ fn update_box(app: &mut App, ctx: &egui::Context) {
         Download,
         Restart(std::path::PathBuf),
     }
+    /// The latest-version cell: matched, newer, or not yet known.
+    enum Latest {
+        Same(String),
+        Newer(String),
+        Unknown,
+    }
     struct View {
-        heading: String,
-        detail: String,
-        detail_color: Color32,
-        /// download completion, when a download is in flight
+        glyph: BadgeGlyph,
+        badge: (Color32, Color32, Color32),
+        title: String,
+        subtitle: String,
+        latest: Latest,
+        /// download completion, when a transfer is in flight
         progress: Option<(Option<f32>, String)>,
-        button: Option<(&'static str, Act)>,
+        /// (label, action, enabled) for the trailing primary button
+        button: Option<(String, Option<Act>)>,
     }
 
     let current = crate::pipeline::version_string();
+    let ok = (t::LIVE_TEXT(), t::LIVE_BG(), t::LIVE_BORDER());
+    let attn = (t::ACCENT(), t::ACCENT_TINT(), t::ACCENT_TINT_BORDER());
+    let busy = (t::FAINT(), t::CHROME(), t::BORDER_LIGHT());
+    let bad = (t::DESTRUCTIVE(), t::FAIL_BG(), t::FAIL_BORDER());
+
     let view: View = {
         let st = app.update.lock().unwrap();
         match &*st {
             UpdateState::Idle => View {
-                heading: format!("Version {current}"),
-                detail: "Firebreak checks only when you ask it to. Nothing is sent but the                          request for the latest release number."
+                glyph: BadgeGlyph::Refresh,
+                badge: busy,
+                title: "Check for updates".into(),
+                subtitle: "Firebreak checks only when you ask it to. Nothing is sent but the \
+                           request for the latest release number."
                     .into(),
-                detail_color: t::SECONDARY(),
+                latest: Latest::Unknown,
                 progress: None,
-                button: Some(("Check now", Act::Check)),
+                button: Some(("Check now".into(), Some(Act::Check))),
             },
             UpdateState::Checking => View {
-                heading: "Checking for updates…".into(),
-                detail: format!("Asking GitHub for the newest release. You have {current}."),
-                detail_color: t::SECONDARY(),
+                glyph: BadgeGlyph::Refresh,
+                badge: busy,
+                title: "Checking for updates".into(),
+                subtitle: "Contacting the release feed. This usually takes a second or two.".into(),
+                latest: Latest::Unknown,
                 progress: None,
-                button: None,
+                button: Some(("Checking…".into(), None)),
             },
             UpdateState::UpToDate(v) => View {
-                heading: "Up to date".into(),
-                detail: format!("Version {v} is the newest release."),
-                detail_color: t::SECONDARY(),
+                glyph: BadgeGlyph::Check,
+                badge: ok,
+                title: "Up to date".into(),
+                subtitle: format!("Version {v} is the newest release."),
+                latest: Latest::Same(v.clone()),
                 progress: None,
-                button: Some(("Check again", Act::Check)),
+                button: Some(("Check again".into(), Some(Act::Check))),
             },
             UpdateState::Available(rel) if crate::update::signing_configured() => View {
-                heading: format!("Version {} is available", rel.latest),
-                detail: format!(
-                    "You have {}. The download is checked against Firebreak's pinned signing                      key before anything is installed, and refused if it does not verify.",
-                    rel.current
-                ),
-                detail_color: t::INK(),
+                glyph: BadgeGlyph::Down,
+                badge: attn,
+                title: "Update available".into(),
+                subtitle: "The download is checked against Firebreak's pinned signing key \
+                           before anything is installed, and refused if it does not verify."
+                    .into(),
+                latest: Latest::Newer(rel.latest.clone()),
                 progress: None,
-                button: Some(("Download & install", Act::Download)),
+                button: Some((format!("Download {}", rel.latest), Some(Act::Download))),
             },
             // A newer build exists but this one carries no key to check it
             // with. Refusing to install is the point, so the dialog says so
             // rather than offering a button that cannot fail closed.
             UpdateState::Available(rel) => View {
-                heading: format!("Version {} is available", rel.latest),
-                detail: format!(
-                    "You have {}. In-app update is disabled in this build because it has no                      signing key pinned to verify the download — get it from the Releases                      page instead.",
-                    rel.current
-                ),
-                detail_color: t::ADVISORY_TEXT(),
+                glyph: BadgeGlyph::Alert,
+                badge: attn,
+                title: "Update available".into(),
+                subtitle: "In-app update is disabled in this build: it has no signing key \
+                           pinned to verify the download. Get it from the Releases page \
+                           instead."
+                    .into(),
+                latest: Latest::Newer(rel.latest.clone()),
                 progress: None,
                 button: None,
             },
             UpdateState::Downloading(p) => View {
-                heading: "Downloading…".into(),
-                detail: "Verification runs on the finished file; nothing is installed until it                          checks out."
+                glyph: BadgeGlyph::Down,
+                badge: attn,
+                title: "Downloading".into(),
+                subtitle: "Verification runs on the finished file; nothing is installed \
+                           until it checks out."
                     .into(),
-                detail_color: t::SECONDARY(),
+                latest: Latest::Unknown,
                 progress: Some((p.fraction(), transferred(*p))),
-                button: None,
+                button: Some(("Downloading…".into(), None)),
             },
             UpdateState::Ready(exe) => View {
-                heading: "Installed — restart to finish".into(),
-                detail: "The signature verified and the new build is in place. The previous                          one is kept alongside it until the next start."
+                glyph: BadgeGlyph::Check,
+                badge: ok,
+                title: "Restart to finish".into(),
+                subtitle: "The signature verified and the new build is in place. The \
+                           previous one is kept alongside it until the next start."
                     .into(),
-                detail_color: t::INK(),
+                latest: Latest::Unknown,
                 progress: None,
-                button: Some(("Restart now", Act::Restart(exe.clone()))),
+                button: Some(("Restart now".into(), Some(Act::Restart(exe.clone())))),
             },
             UpdateState::Error(e) => View {
-                heading: "Update failed".into(),
-                detail: e.clone(),
-                detail_color: t::DESTRUCTIVE(),
+                glyph: BadgeGlyph::Alert,
+                badge: bad,
+                title: "Couldn't check for updates".into(),
+                subtitle: e.clone(),
+                latest: Latest::Unknown,
                 progress: None,
-                button: Some(("Try again", Act::Check)),
+                button: Some(("Try again".into(), Some(Act::Check))),
             },
         }
     };
 
     let mut close = false;
     let mut act: Option<Act> = None;
-    dialog_window(ctx, "update", |ui| {
-        ui.add_space(18.0);
-        indented(ui, |ui| {
-            ui.label(
-                egui::RichText::new("UPDATES")
-                    .font(t::semibold(9.5))
-                    .color(t::TERTIARY()),
-            );
-        });
-        ui.add_space(6.0);
-        indented(ui, |ui| {
-            ui.label(
-                egui::RichText::new(&view.heading)
-                    .font(t::semibold(14.0))
-                    .color(t::INK()),
-            );
-        });
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(20.0);
-            ui.set_max_width(300.0);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(
-                egui::RichText::new(&view.detail)
-                    .font(t::sans(11.5))
-                    .color(view.detail_color),
-            );
-        });
+    let mut open_repo = false;
 
-        if let Some((fraction, label)) = &view.progress {
-            ui.add_space(12.0);
-            indented(ui, |ui| {
-                progress_bar(ui, *fraction, 300.0);
+    dialog_window(ctx, "update", DIALOG_W, |ui| {
+        dialog_body(ui, |ui| {
+            // ---- status row ----
+            ui.horizontal_top(|ui| {
+                let (fg, bg, border) = view.badge;
+                status_badge(ui, view.glyph, fg, bg, border);
+                ui.add_space(16.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(&view.title)
+                            .font(t::semibold(22.0))
+                            .color(t::INK()),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(&view.subtitle)
+                            .font(t::sans(15.0))
+                            .color(t::SECONDARY()),
+                    );
+                });
             });
-            ui.add_space(5.0);
-            indented(ui, |ui| {
+
+            ui.add_space(22.0);
+
+            // ---- installed → latest ----
+            sunken_block(ui, |ui| {
+                let col = (ui.available_width() - 40.0) / 2.0;
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(col);
+                        ui.label(
+                            egui::RichText::new("INSTALLED")
+                                .font(t::mono(11.0))
+                                .color(t::FAINT()),
+                        );
+                        ui.add_space(5.0);
+                        ui.label(
+                            egui::RichText::new(&current)
+                                .font(t::mono(15.0))
+                                .color(t::INK()),
+                        );
+                    });
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        // Drawn, not typed: the bundled Plex Mono subset has
+                        // no U+2192, so a text arrow renders as tofu. Pushed
+                        // down so it sits on the value line, not the top of
+                        // the row.
+                        ui.add_space(25.0);
+                        let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 12.0), Sense::hover());
+                        let c = r.center();
+                        let s = Stroke::new(1.5_f32, t::HAIRLINE_TEXT());
+                        let p = ui.painter();
+                        p.line_segment([c + Vec2::new(-6.0, 0.0), c + Vec2::new(6.0, 0.0)], s);
+                        p.line_segment([c + Vec2::new(2.0, -4.0), c + Vec2::new(6.0, 0.0)], s);
+                        p.line_segment([c + Vec2::new(2.0, 4.0), c + Vec2::new(6.0, 0.0)], s);
+                    });
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("LATEST")
+                                .font(t::mono(11.0))
+                                .color(t::FAINT()),
+                        );
+                        ui.add_space(5.0);
+                        let (text, colour) = match &view.latest {
+                            Latest::Same(v) => (v.clone(), t::INK()),
+                            Latest::Newer(v) => (v.clone(), t::ACCENT()),
+                            Latest::Unknown => ("\u{2014}".to_string(), t::DISABLED()),
+                        };
+                        ui.label(egui::RichText::new(text).font(t::mono(15.0)).color(colour));
+                    });
+                });
+            });
+
+            if let Some((fraction, label)) = &view.progress {
+                ui.add_space(16.0);
+                progress_bar(ui, *fraction, ui.available_width());
+                ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(label)
-                        .font(t::mono(10.5))
-                        .color(t::TERTIARY()),
+                        .font(t::mono(12.0))
+                        .color(t::SECONDARY()),
                 );
-            });
-        }
-
-        ui.add_space(16.0);
-        indented(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!("Source: github.com/{}", crate::update::REPO))
-                    .font(t::mono(10.0))
-                    .color(t::TERTIARY()),
-            );
-        });
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            if let Some((label, a)) = view.button {
-                if primary_button(ui, label, t::ACCENT()).clicked() {
-                    act = Some(a);
-                }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(20.0);
-                if flat_button(ui, "Close").clicked() {
-                    close = true;
+
+            ui.add_space(22.0);
+
+            // ---- source ----
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(74.0, 18.0), Sense::hover());
+                ui.painter().text(
+                    r.left_center(),
+                    Align2::LEFT_CENTER,
+                    "SOURCE",
+                    t::mono(12.0),
+                    t::FAINT(),
+                );
+                let url = format!("github.com/{}", crate::update::REPO);
+                let text = truncate_to(ui, &url, t::mono(13.0), ui.available_width());
+                let resp = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&text)
+                            .font(t::mono(13.0))
+                            .color(t::ACCENT()),
+                    )
+                    .sense(Sense::click()),
+                );
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    open_repo = true;
                 }
             });
         });
-        ui.add_space(16.0);
+
+        // ---- footer: Close secondary, the state's action primary ----
+        dialog_footer(ui, |ui| {
+            if let Some((label, action)) = view.button {
+                let enabled = action.is_some();
+                if dialog_button(ui, &label, true, enabled).clicked() {
+                    act = action;
+                }
+                ui.add_space(12.0);
+            }
+            if dialog_button(ui, "Close", false, true).clicked() {
+                close = true;
+            }
+        });
     });
 
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close = true;
+    }
+    if open_repo {
+        open_url(&format!("https://github.com/{}", crate::update::REPO));
+    }
+    if close {
+        app.update_open = false;
+    }
     match act {
         Some(Act::Check) => app.spawn_update_check(ctx.clone()),
         Some(Act::Download) => app.spawn_update_download(ctx.clone()),
         Some(Act::Restart(exe)) => crate::update::restart(&exe),
         None => {}
-    }
-    if close {
-        app.update_open = false;
     }
 }
 

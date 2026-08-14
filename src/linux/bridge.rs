@@ -152,6 +152,7 @@ fn to_result(
         rows,
         ctx: AuditContext {
             hostname: format!("{} ({})", crate::pipeline::hostname(), backend.label()),
+            backend: backend.label().into(),
             auditing_active: collecting,
             collection_started: None,
             last_ingest: Some(crate::pipeline::now_iso()),

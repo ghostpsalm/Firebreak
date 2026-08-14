@@ -370,6 +370,7 @@ fn import_events(
         rows,
         ctx: ui::AuditContext {
             hostname: host_label,
+            backend: "wfp".into(),
             auditing_active: true,
             collection_started: None,
             last_ingest: Some(now_iso()),
@@ -621,6 +622,7 @@ pub fn quick_cached_result(db_path: &Path) -> Option<AnalysisResult> {
         rows,
         ctx: ui::AuditContext {
             hostname: hostname(),
+            backend: "wfp".into(),
             auditing_active: true,
             collection_started: store.get_meta("collection_started").ok().flatten(),
             last_ingest: store.get_meta("last_ingest").ok().flatten(),
@@ -665,6 +667,7 @@ pub fn rules_only(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisRes
         rows,
         ctx: ui::AuditContext {
             hostname: hostname(),
+            backend: "wfp".into(),
             auditing_active: false,
             collection_started: None,
             last_ingest: None,
@@ -839,6 +842,9 @@ pub fn analyze(db_path: &Path, progress: &dyn Fn(&str)) -> Result<AnalysisResult
 
     let ctx = ui::AuditContext {
         hostname: hostname(),
+        // The Windows evidence layer is always WFP — there is no other
+        // backend to detect here, unlike Linux.
+        backend: "wfp".into(),
         auditing_active: true,
         collection_started: store.get_meta("collection_started")?,
         last_ingest: store.get_meta("last_ingest")?,

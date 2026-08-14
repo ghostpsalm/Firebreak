@@ -114,6 +114,11 @@ pub fn TABLE_BG() -> Color32 {
 pub fn RAISED() -> Color32 {
     c((0xFA, 0xF9, 0xF7), (0x2B, 0x2B, 0x2F))
 }
+/// The dialogs' footer action bar — a shade off the dialog body, so the
+/// action row reads as a separate register from the content above it.
+pub fn DIALOG_FOOTER() -> Color32 {
+    c((0xF7, 0xF7, 0xF5), (0x1F, 0x1F, 0x22))
+}
 pub fn TITLEBAR() -> Color32 {
     c((0xEC, 0xEA, 0xE6), (0x1C, 0x1C, 0x1E))
 }

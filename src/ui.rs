@@ -99,6 +99,11 @@ impl RuleRow {
 #[derive(Default)]
 pub struct AuditContext {
     pub hostname: String,
+    /// Which firewall backend the evidence came from — "wfp", "ufw",
+    /// "firewalld", "nftables". Shown in the About dialog's facts block, and
+    /// empty where it is genuinely not known (a reviewed bundle whose
+    /// manifest predates the field).
+    pub backend: String,
     pub auditing_active: bool,
     pub collection_started: Option<String>,
     pub last_ingest: Option<String>,
@@ -527,6 +532,8 @@ pub struct App {
     pub(crate) update: std::sync::Arc<std::sync::Mutex<UpdateState>>,
     /// lazily-loaded app logo for the title bar
     pub(crate) logo: Option<egui::TextureHandle>,
+    /// the same icon at full resolution, for the About dialog's 64px tile
+    pub(crate) logo_large: Option<egui::TextureHandle>,
     /// scratch DB for the current .evtx import session (persists across
     /// "Add" imports so multiple machines can be reviewed together)
     import_db: Option<PathBuf>,
@@ -615,6 +622,7 @@ impl App {
             dark_mode: false,
             update: std::sync::Arc::new(std::sync::Mutex::new(UpdateState::Idle)),
             logo: None,
+            logo_large: None,
             import_db: None,
             #[cfg(target_os = "linux")]
             last_read: std::time::Instant::now(),
@@ -631,6 +639,22 @@ impl App {
         let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
         let tex = ctx.load_texture("logo", img, egui::TextureOptions::LINEAR);
         self.logo = Some(tex.clone());
+        tex
+    }
+
+    /// The app icon at full resolution, for the 64px tile in About.
+    ///
+    /// A separate texture from [`App::logo_texture`] on purpose: that one is
+    /// the 32px asset for the title bar, and drawing it at 64 would be
+    /// visibly soft. This is the same established icon, not a new one.
+    pub(crate) fn logo_texture_large(&mut self, ctx: &egui::Context) -> egui::TextureHandle {
+        if let Some(t) = &self.logo_large {
+            return t.clone();
+        }
+        let (rgba, w, h) = image_rgba(APP_ICON_PNG).unwrap_or((vec![0; 4], 1, 1));
+        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+        let tex = ctx.load_texture("logo_large", img, egui::TextureOptions::LINEAR);
+        self.logo_large = Some(tex.clone());
         tex
     }
 

@@ -267,6 +267,7 @@ pub fn to_result(b: ReviewBundle) -> crate::pipeline::AnalysisResult {
         rows,
         ctx: crate::ui::AuditContext {
             hostname: format!("{} ({})", b.manifest.hostname, b.manifest.backend),
+            backend: b.manifest.backend.clone(),
             auditing_active: b.manifest.collecting,
             collection_started: None,
             last_ingest: Some(b.manifest.collected_at.clone()),

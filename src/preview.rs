@@ -443,6 +443,7 @@ pub fn run() -> Result<()> {
         rows,
         ui::AuditContext {
             hostname: "DC-EDGE-02".into(),
+            backend: "wfp".into(),
             auditing_active: true,
             collection_started: Some(iso_ago(15 * 24 * 60)),
             last_ingest: Some(iso_ago(2)),
