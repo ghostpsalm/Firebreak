@@ -150,8 +150,10 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
 #[cfg(windows)]
 fn decode_provider_data(data: &[u8]) -> (String, String) {
     let utf16: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let text: String = String::from_utf16_lossy(&utf16)
         .chars()
