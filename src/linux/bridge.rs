@@ -119,6 +119,34 @@ fn to_result(
     collecting: bool,
     reviewed: &Reviewed,
 ) -> AnalysisResult {
+    to_result_from(
+        backend,
+        report,
+        collecting,
+        reviewed,
+        &super::default_policy::Sources::system(),
+    )
+}
+
+/// As [`to_result`], reading the stance from the supplied sources.
+fn to_result_from(
+    backend: super::Backend,
+    report: super::Report,
+    collecting: bool,
+    reviewed: &Reviewed,
+    sources: &super::default_policy::Sources,
+) -> AnalysisResult {
+    let stance = super::default_policy::read_from(backend, sources);
+    fold(backend, report, collecting, reviewed, stance)
+}
+
+fn fold(
+    backend: super::Backend,
+    report: super::Report,
+    collecting: bool,
+    reviewed: &Reviewed,
+    stance: Option<super::default_policy::DefaultInbound>,
+) -> AnalysisResult {
     let measured: i64 = report.rows.iter().filter_map(|r| r.hits).sum();
     let unmeasurable = report.unmeasurable.len() as u64;
 
@@ -130,7 +158,6 @@ fn to_result(
         );
     }
 
-    let stance = super::default_policy::read(backend);
     let mut rows = report
         .rows
         .into_iter()
@@ -340,11 +367,12 @@ mod tests {
             note: None,
             unmeasurable: vec![("b".into(), "no counter".into())],
         };
-        let result = to_result(
+        let result = fold(
             super::super::Backend::Ufw,
             report,
             true,
             &Default::default(),
+            None,
         );
         assert_eq!(result.ctx.unmatched_events, 1);
         assert!(
@@ -363,13 +391,152 @@ mod tests {
             note: None,
             unmeasurable: vec![],
         };
-        let result = to_result(
+        let result = fold(
             super::super::Backend::Ufw,
             report,
             true,
             &Default::default(),
+            None,
         );
         assert_eq!(result.ctx.events_processed, 10);
         assert_eq!(result.rows.len(), 2);
+        assert!(result.ctx.default_inbound.is_none());
+    }
+
+    #[test]
+    fn a_known_default_stance_appends_the_synthetic_row() {
+        let report = super::super::Report {
+            rows: vec![row("a", "Allow", Some(4))],
+            note: None,
+            unmeasurable: vec![],
+        };
+        let result = fold(
+            super::super::Backend::Ufw,
+            report,
+            true,
+            &Default::default(),
+            Some(super::super::default_policy::DefaultInbound {
+                verdict: crate::default_policy::Verdict::Drop,
+                detail: "DEFAULT_INPUT_POLICY=\"DROP\"".into(),
+            }),
+        );
+        // The synthetic catch-all rides along with the user's rules, and the
+        // totals still count only what the backend actually measured.
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.ctx.events_processed, 4);
+        assert!(result.ctx.default_inbound.is_some());
+        // …and it is recognisably *the catch-all*, not merely an extra row.
+        // Everything that keeps it out of plans, quick actions, the zero-hit
+        // list, the CSV export and the rule count keys off these four facts.
+        assert_default_policy_row(&result.rows[1], "Block");
+    }
+
+    /// The identity the rest of the app relies on to treat this row as not a
+    /// rule. Shared so the injected-source tests and the folded-stance test
+    /// cannot drift apart on what "the catch-all row" means.
+    fn assert_default_policy_row(r: &RuleRow, action: &str) {
+        assert!(r.is_default_policy(), "source must be DefaultPolicy");
+        assert!(
+            r.rule
+                .name
+                .starts_with(crate::default_policy::ROW_ID_PREFIX),
+            "name must carry the synthetic prefix, got {:?}",
+            r.rule.name
+        );
+        assert_eq!(
+            r.rule.policy_source_type.as_deref(),
+            Some(crate::model::RuleInfo::SOURCE_TYPE_DEFAULT)
+        );
+        assert!(
+            !r.hits_known,
+            "counters sit after the verdict, so zero here would read as \
+             \"measured, never matched\" and list the host's default deny as \
+             a disable candidate"
+        );
+        assert_eq!(r.rule.action, action);
+    }
+
+    /// A ufw defaults file at a path nothing else in the run touches. The
+    /// seam exists precisely so no test reads the host's real one.
+    fn ufw_sources(
+        tag: &str,
+        body: &str,
+    ) -> (std::path::PathBuf, super::super::default_policy::Sources) {
+        let dir = std::env::temp_dir().join(format!("fb-bridge-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ufw.conf");
+        std::fs::write(&file, body).unwrap();
+        (
+            dir,
+            super::super::default_policy::Sources {
+                ufw_defaults: vec![file],
+            },
+        )
+    }
+
+    fn one_rule_report() -> super::super::Report {
+        super::super::Report {
+            rows: vec![row("a", "Allow", Some(4))],
+            note: None,
+            unmeasurable: vec![],
+        }
+    }
+
+    /// The three callers each read the stance themselves and handed it in,
+    /// so a caller that quietly stopped passing it dropped the default-inbound
+    /// row from the header, the rule table and the socket list with nothing
+    /// failing. Reading it *inside* this function puts file → parse → row →
+    /// header under one assertion the callers cannot bypass.
+    #[test]
+    fn the_ufw_default_stance_is_read_through_the_supplied_sources() {
+        let (dir, sources) = ufw_sources(
+            "defpol-drop",
+            "# /etc/default/ufw\nIPV6=yes\nDEFAULT_INPUT_POLICY=\"DROP\"\n\
+             DEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
+        );
+
+        let result = to_result_from(
+            super::super::Backend::Ufw,
+            one_rule_report(),
+            true,
+            &Default::default(),
+            &sources,
+        );
+
+        assert_eq!(result.rows.len(), 2, "the user's rule plus the catch-all");
+        assert_default_policy_row(&result.rows[1], "Block");
+        assert!(
+            result.ctx.default_inbound.is_some(),
+            "the evidence header carries the same verdict as the row"
+        );
+        assert_eq!(
+            result.ctx.events_processed, 4,
+            "the catch-all is not measured and must contribute no hits"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unreadable is reported as unknown, never as a deny — so nothing is
+    /// appended at all rather than a row claiming a block that is not there.
+    #[test]
+    fn an_unreadable_ufw_default_appends_no_row_at_all() {
+        let (dir, sources) = ufw_sources(
+            "defpol-nokey",
+            "IPV6=yes\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
+        );
+
+        let result = to_result_from(
+            super::super::Backend::Ufw,
+            one_rule_report(),
+            true,
+            &Default::default(),
+            &sources,
+        );
+
+        assert_eq!(result.rows.len(), 1);
+        assert!(result.ctx.default_inbound.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

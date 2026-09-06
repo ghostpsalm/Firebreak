@@ -26,15 +26,43 @@ use serde_json::Value;
 
 pub use crate::default_policy::{DefaultInbound, Verdict};
 
+/// Where the verdict is read from. Only ufw's is a file the caller can
+/// point elsewhere; the other two backends are asked for it directly.
+pub struct Sources {
+    /// ufw's defaults files, in the order they are tried.
+    pub ufw_defaults: Vec<std::path::PathBuf>,
+}
+
+impl Sources {
+    /// The host's real files.
+    pub fn system() -> Self {
+        Self {
+            ufw_defaults: vec![
+                std::path::PathBuf::from("/etc/default/ufw"),
+                std::path::PathBuf::from("/etc/ufw/ufw.conf"),
+            ],
+        }
+    }
+}
+
 /// Read the active backend's default inbound verdict. `None` means it could
 /// not be read — which is reported as unknown, never as a deny.
 pub fn read(backend: super::Backend) -> Option<DefaultInbound> {
+    read_from(backend, &Sources::system())
+}
+
+/// As [`read`], against the supplied sources. **Only the ufw branch reads
+/// them**: firewalld and raw nftables shell out to the live host and ignore
+/// `sources` entirely, so this seam does not make all three backends
+/// testable — just the one whose evidence is a file.
+pub fn read_from(backend: super::Backend, sources: &Sources) -> Option<DefaultInbound> {
     match backend {
         super::Backend::Firewalld => {
             parse_firewalld_input_chain(&super::firewalld::input_chain_text().ok()?)
         }
         super::Backend::Ufw => {
-            let text = ["/etc/default/ufw", "/etc/ufw/ufw.conf"]
+            let text = sources
+                .ufw_defaults
                 .iter()
                 .find_map(|p| std::fs::read_to_string(p).ok())?;
             parse_ufw_defaults(&text)
@@ -243,5 +271,74 @@ mod tests {
                 .unwrap();
         assert!(parse_nft_input_policy(&json).is_none());
         assert!(parse_ufw_defaults("IPV6=yes\n").is_none());
+    }
+
+    /// A directory nothing else in the run shares, so a parallel `cargo
+    /// test` cannot collide with it.
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fb-defpol-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// ufw's defaults live in one of two files and the first need not exist,
+    /// so the reader walks the list. Stopping at the first missing path would
+    /// report a host that drops unmatched inbound as *unknown* — and unknown
+    /// is what the header shows when it cannot say whether a listening socket
+    /// is exposed.
+    ///
+    /// The point of the absent first entry is that it makes the fallback
+    /// ordering, not just the parser, the thing under test.
+    #[test]
+    fn a_missing_first_ufw_defaults_file_falls_through_to_the_next() {
+        let dir = scratch("fallback");
+        let present = dir.join("ufw.conf");
+        std::fs::write(
+            &present,
+            "# /etc/default/ufw\nIPV6=yes\nDEFAULT_INPUT_POLICY=\"DROP\"\n\
+             DEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
+        )
+        .unwrap();
+        let sources = Sources {
+            ufw_defaults: vec![dir.join("absent-on-purpose"), present],
+        };
+
+        let d = read_from(crate::linux::Backend::Ufw, &sources).expect("a verdict");
+
+        assert_eq!(d.verdict, Verdict::Drop);
+        // the *output* policy in the same file is accept; reading the wrong
+        // key would report an open host
+        assert!(d.detail.contains("DROP"), "{}", d.detail);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A defaults file that exists but names no input policy is unreadable,
+    /// not a deny. Guessing one would tell someone an exposed port is shut.
+    #[test]
+    fn a_defaults_file_without_the_key_is_unknown_not_a_deny() {
+        let dir = scratch("nokey");
+        let file = dir.join("ufw.conf");
+        std::fs::write(&file, "IPV6=yes\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n").unwrap();
+        let sources = Sources {
+            ufw_defaults: vec![file],
+        };
+
+        assert!(read_from(crate::linux::Backend::Ufw, &sources).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The seam exists so tests can point somewhere else; production must
+    /// still point at the host's real files, in this order.
+    #[test]
+    fn the_system_sources_are_ufws_two_defaults_files() {
+        assert_eq!(
+            Sources::system().ufw_defaults,
+            vec![
+                std::path::PathBuf::from("/etc/default/ufw"),
+                std::path::PathBuf::from("/etc/ufw/ufw.conf"),
+            ]
+        );
     }
 }
