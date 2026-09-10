@@ -119,6 +119,11 @@ fn to_result(
     collecting: bool,
     reviewed: &Reviewed,
 ) -> AnalysisResult {
+    // Naming the host's own files is the one line here no test executes:
+    // covering it would mean a test that reads /etc/default/ufw, which is
+    // the host-dependence the `Sources` seam exists to keep out of them.
+    // `the_system_sources_are_ufws_two_defaults_files` pins what `system()`
+    // returns; `to_result_from` covers everything past this call.
     to_result_from(
         backend,
         report,
