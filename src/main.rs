@@ -641,24 +641,59 @@ fn dump_filters() -> Result<()> {
 /// rule Firebreak never actually observed.
 #[cfg(target_os = "linux")]
 fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
-    println!(
+    // The one line of the headless path no test executes: reading the host's
+    // own files is exactly the host-dependence the `Sources` seam exists to
+    // keep out of the tests. `the_system_sources_are_ufws_two_defaults_files`
+    // pins what `system()` returns; everything below it is covered by
+    // `linux_report_text`'s tests.
+    print!(
+        "{}",
+        linux_report_text(backend, report, &linux::default_policy::Sources::system())
+    );
+}
+
+/// As [`print_linux_report`], rendered to a string and reading the stance
+/// from the supplied sources so the whole report can be asserted on without
+/// depending on the host it runs on.
+#[cfg(target_os = "linux")]
+fn linux_report_text(
+    backend: linux::Backend,
+    report: &linux::Report,
+    sources: &linux::default_policy::Sources,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
         "Backend: {} — {}",
         backend.label(),
         backend.evidence_summary()
     );
     if backend.needs_instrumentation() {
-        println!("Collection: opt-in (--enable-only), removable (--restore-audit)");
+        let _ = writeln!(
+            out,
+            "Collection: opt-in (--enable-only), removable (--restore-audit)"
+        );
     }
     // The rules below are exceptions; this is the verdict in the gaps
     // between them, and without it a reader cannot tell whether a port with
     // no rule is closed or wide open.
-    match linux::default_policy::read(backend) {
-        Some(d) => println!(
-            "Unmatched inbound: {} — {}",
-            d.verdict.headline().to_lowercase(),
-            d.detail
-        ),
-        None => println!("Unmatched inbound: could not be determined on this host"),
+    match linux::default_policy::read_from(backend, sources) {
+        Some(d) => {
+            let _ = writeln!(
+                out,
+                "Unmatched inbound: {} — {}",
+                d.verdict.headline().to_lowercase(),
+                d.detail
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "Unmatched inbound: could not be determined on this host"
+            );
+        }
     }
 
     let unused = report.unused();
@@ -667,25 +702,32 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     // be waiting for its first connection.
     let (idle, empty): (Vec<&&linux::RuleUsageRow>, Vec<&&linux::RuleUsageRow>) =
         unused.iter().partition(|r| !r.listening.is_empty());
-    println!(
+    let _ = writeln!(
+        out,
         "\n=== Never matched, nothing listening ({}) — strongest disable candidates ===",
         empty.len()
     );
     for row in &empty {
-        println!(
+        let _ = writeln!(
+            out,
             "  {}  [{} {}]",
             row.rule.display_name, row.rule.direction, row.rule.action
         );
     }
 
     if !idle.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "\n=== Never matched, but something is listening ({}) ===",
             idle.len()
         );
-        println!("(the port is open and a process is behind it — it may simply be idle)");
+        let _ = writeln!(
+            out,
+            "(the port is open and a process is behind it — it may simply be idle)"
+        );
         for row in &idle {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {}  <- {}",
                 row.rule.display_name,
                 row.listening.join(", ")
@@ -699,14 +741,15 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
         .filter(|r| r.hits.unwrap_or(0) > 0)
         .collect();
     used.sort_by_key(|r| std::cmp::Reverse(r.hits.unwrap_or(0)));
-    println!("\n=== Matched (most first) ===");
+    let _ = writeln!(out, "\n=== Matched (most first) ===");
     for row in used {
         let behind = if row.listening.is_empty() {
             String::new()
         } else {
             format!("  <- {}", row.listening.join(", "))
         };
-        println!(
+        let _ = writeln!(
+            out,
             "  {:>12} packets  {}{behind}",
             row.hits.unwrap_or(0),
             row.rule.display_name
@@ -714,19 +757,25 @@ fn print_linux_report(backend: linux::Backend, report: &linux::Report) {
     }
 
     if let Some(note) = &report.note {
-        println!("\nNote: {note}");
+        let _ = writeln!(out, "\nNote: {note}");
     }
 
     if !report.unmeasurable.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "\n=== Not measurable ({}) — active, but with no usable hit count ===",
             report.unmeasurable.len()
         );
-        println!("(these are NOT unused; Firebreak simply cannot count them)");
+        let _ = writeln!(
+            out,
+            "(these are NOT unused; Firebreak simply cannot count them)"
+        );
         for (id, why) in &report.unmeasurable {
-            println!("  {id}\n      {why}");
+            let _ = writeln!(out, "  {id}\n      {why}");
         }
     }
+
+    out
 }
 
 fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
@@ -859,5 +908,128 @@ mod tests {
     fn db_takes_a_path() {
         let a = parse(&["--db", r"D:\fb.db"]);
         assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
+    }
+
+    /// The headless report, rendered as text instead of printed (#19).
+    ///
+    /// `--no-ui` read the host's default inbound stance from inside the
+    /// printing function, where nothing executed it: deleting that read left
+    /// the gate green while every headless report silently dropped the
+    /// verdict that says whether a listening socket with no rule is exposed.
+    /// It is the second site of the defect PR #18 closed in `linux::bridge`.
+    ///
+    /// These assert on the **whole** rendered report rather than a stance
+    /// line alone, because a helper that only produces the line could still
+    /// be dropped from the report with nothing failing — which is the actual
+    /// defect.
+    #[cfg(target_os = "linux")]
+    mod linux_report {
+        use crate::linux::{default_policy::Sources, Backend, Report, RuleUsageRow};
+
+        /// A ufw defaults file at a path nothing else in the run touches.
+        /// The seam exists precisely so no test reads the host's real one —
+        /// a report whose content depends on the host it runs on is the bug
+        /// this line of work is fixing.
+        fn ufw_sources(tag: &str, body: &str) -> (std::path::PathBuf, Sources) {
+            let dir = std::env::temp_dir().join(format!("fb-noui-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("ufw.conf");
+            std::fs::write(&file, body).unwrap();
+            (
+                dir,
+                Sources {
+                    ufw_defaults: vec![file],
+                },
+            )
+        }
+
+        fn row(name: &str, action: &str, hits: Option<i64>) -> RuleUsageRow {
+            RuleUsageRow {
+                listening: Vec::new(),
+                hits,
+                rule: crate::model::RuleInfo {
+                    name: name.into(),
+                    display_name: name.into(),
+                    description: None,
+                    enabled: "True".into(),
+                    direction: "Inbound".into(),
+                    action: action.into(),
+                    profile: "Any".into(),
+                    group: None,
+                    program: None,
+                    protocol: None,
+                    local_port: None,
+                    remote_port: None,
+                    service: None,
+                    remote_address: None,
+                    policy_source: None,
+                    policy_source_type: None,
+                },
+            }
+        }
+
+        fn one_rule_report() -> Report {
+            Report {
+                rows: vec![row("a", "Allow", Some(4))],
+                note: None,
+                unmeasurable: vec![],
+            }
+        }
+
+        /// The stance comes from the sources handed in, and it lands in the
+        /// report. Asserted as the exact text of the whole report so that
+        /// neither the line nor its wording can go missing unnoticed.
+        #[test]
+        fn the_headless_report_reads_the_stance_through_the_supplied_sources() {
+            let (dir, sources) = ufw_sources(
+                "stance-drop",
+                "# /etc/default/ufw\nIPV6=yes\nDEFAULT_INPUT_POLICY=\"DROP\"\n\
+                 DEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
+            );
+
+            let text = crate::linux_report_text(Backend::Ufw, &one_rule_report(), &sources);
+
+            // The *output* policy in the same file is accept; reading the
+            // wrong key would report this host as open.
+            assert_eq!(
+                text,
+                concat!(
+                    "Backend: ufw — iptables counters, always on — nothing to enable\n",
+                    "Unmatched inbound: blocked — ufw's DEFAULT_INPUT_POLICY is DROP\n",
+                    "\n=== Never matched, nothing listening (0) — strongest disable candidates ===\n",
+                    "\n=== Matched (most first) ===\n",
+                    "             4 packets  a\n",
+                )
+            );
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// A defaults file that exists but names no input policy is
+        /// unreadable, not a deny. Reporting a block that is not there tells
+        /// someone an exposed port is shut — see CLAUDE.md, "The
+        /// default-inbound row": never assumed, unreadable is unknown.
+        #[test]
+        fn an_unreadable_default_is_unknown_never_a_deny() {
+            let (dir, sources) = ufw_sources(
+                "stance-nokey",
+                "IPV6=yes\nDEFAULT_OUTPUT_POLICY=\"ACCEPT\"\n",
+            );
+
+            let text = crate::linux_report_text(Backend::Ufw, &one_rule_report(), &sources);
+
+            assert!(
+                text.contains("Unmatched inbound: could not be determined on this host"),
+                "{text}"
+            );
+            for verdict in ["blocked", "rejected", "allowed"] {
+                assert!(
+                    !text.contains(verdict),
+                    "unknown must never render as {verdict}:\n{text}"
+                );
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

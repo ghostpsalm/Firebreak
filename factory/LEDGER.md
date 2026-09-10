@@ -14,3 +14,4 @@ number would misrepresent cost.
 |---|---|---|---|---|---|---|---|---|
 | 2026-08-01T05:01:53Z | issue-6 | done | #6 | 1 commits | failure | 414m | out 127,776 - cache-read 14,918,374 - agents 468,804 total across 11 spawns | bounces=0 breaker_verdict=no-defect-found findings_deferred=4 findings_fixed=1 guard_tests=1 laps=2 reviewer_blocking=0 seraph_unsure=0 slices=3 tests_added=3 |
 | 2026-09-06T11:22:37Z | bridge-totals-flake | done | - | 3 commits | success | 173m | out 89,916 - cache-read 16,338,036 - agents 341,392 total across 7 spawns | breaker_verdict=no-defect-found guard_tests=2 laps=1 seraph_unsure=2 slices=2 tests_added=5 |
+| 2026-09-10T00:13:38Z | no-ui-stance | done | #19 | 1 commits | success | 5088m | out 69,298 - cache-read 18,131,075 - agents 255,729 total across 5 spawns | breaker_verdict=defect-found findings_deferred=1 guard_tests=1 laps=0 seraph_unsure=0 slices=1 tests_added=2 |

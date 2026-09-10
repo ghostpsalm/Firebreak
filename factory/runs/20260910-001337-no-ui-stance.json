@@ -1,0 +1,162 @@
+{
+  "recorded_at": "2026-09-10T00:13:38Z",
+  "repo": "no-ui-stance",
+  "branch": "linux/no-ui-stance",
+  "base": "5c1815030ab22bf54e71114b27a840563c673ea6",
+  "window_start": "2026-09-06T21:25:28+10:00",
+  "head": "9e3288584f53b58a0ae41dd5fa41aa5709316e70",
+  "issue": {
+    "number": 19,
+    "state": "OPEN",
+    "title": "print_linux_report reads the default stance unguarded, and no test would catch its removal",
+    "url": "https://github.com/ghostpsalm/Firebreak/issues/19"
+  },
+  "commits": [
+    {
+      "sha": "9e3288584f53b58a0ae41dd5fa41aa5709316e70",
+      "subject": "Read the headless report's stance through one seam (#19)"
+    }
+  ],
+  "commit_count": 1,
+  "diffstat": "3 files changed, 204 insertions(+), 30 deletions(-)",
+  "ci": {
+    "conclusion": "success",
+    "displayTitle": "Merge pull request #18 from ghostpsalm/fix/bridge-totals-flake-2",
+    "status": "completed",
+    "url": "https://github.com/ghostpsalm/Firebreak/actions/runs/34030214757"
+  },
+  "tokens": {
+    "available": true,
+    "scoped": true,
+    "parent_thread": {
+      "input_tokens": 196,
+      "output_tokens": 69298,
+      "cache_read_input_tokens": 18131075,
+      "cache_creation_input_tokens": 1196940
+    },
+    "subagents": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 0
+    },
+    "subagent_spawns": 5,
+    "by_agent": {
+      "architect": {
+        "spawns": 1,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 48285,
+        "duration_ms": 156554,
+        "models": []
+      },
+      "oracle": {
+        "spawns": 1,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 63510,
+        "duration_ms": 294421,
+        "models": []
+      },
+      "builder": {
+        "spawns": 1,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 36669,
+        "duration_ms": 180848,
+        "models": []
+      },
+      "seraph": {
+        "spawns": 1,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 39267,
+        "duration_ms": 144541,
+        "models": []
+      },
+      "breaker": {
+        "spawns": 1,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "total_tokens": 67998,
+        "duration_ms": 285791,
+        "models": []
+      }
+    },
+    "usage_blocks": 98,
+    "skipped_no_timestamp": 0,
+    "transcripts": [
+      {
+        "file": "4b0ed7d8-8669-4304-8e30-3d5348f30d37.jsonl",
+        "usage_blocks": 98
+      }
+    ],
+    "agent_wall_clock_ms": 1062155,
+    "first_activity": "2026-09-06T11:25:31.091000+00:00",
+    "last_activity": "2026-09-10T00:13:36.447000+00:00",
+    "notification_tokens": 255729,
+    "attribution": "this session, by CLAUDE_CODE_SESSION_ID",
+    "suspect": false
+  },
+  "asks": [],
+  "fence_decisions": {
+    "block: destructive SQL DDL": 2,
+    "ask: recording an owner decision: This writes into the owner-decision channel, which is the pro": 147,
+    "block: The authoritative full gate is a control-plane operation and this process is not the contr": 112,
+    "block: a factory worker role executing the authoritative full gate": 141,
+    "block: running an owner-decision command from inside a factory worktree": 123,
+    "block: recursive/forced delete": 166,
+    "block: a model-tool write to Factory acceptance authority state": 393,
+    "ask: This edits a version number.": 56,
+    "ask: This would publish a GitHub release, which ships to real devices.": 19,
+    "ask: This would publish a crate to a registry, which ships to real devices.": 21,
+    "ask: This posts to the release endpoint, which ships an update to real devices.": 19,
+    "block: editing the deployed factory directly": 133,
+    "block: writing to a file the harness owns": 19,
+    "block: touching a secret/credential file": 93,
+    "block: sending a secret/credential file to a network client": 570,
+    "block: sending ~/.claude.json to a network client": 38,
+    "block: force push (never rewrite published history)": 20,
+    "block: editing an existing migration": 19,
+    "block: malformed hook input": 662,
+    "block: unbounded read of a 600-line source file": 73,
+    "block: writing an owner approval from inside a factory worktree": 114,
+    "block: writing an owner approval from a session with no recorded cwd": 19,
+    "block: running an owner-decision command from a session with no recorded cwd": 19,
+    "block: hard reset discards work": 17,
+    "block: unbounded read of a 1326-line source file": 17,
+    "block: unbounded read of a 13294-line source file": 17,
+    "block: the driver's state file could not be read (/tmp/tmp77mk362_/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpgd6jm67x/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmp1tr3h209/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: unbounded read of a 511-line source file": 2,
+    "block: the driver's state file could not be read (/tmp/tmpy36rdrxx/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpbx0ktpg1/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpe7e84qdj/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpybbtyg7x/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpsse8eplz/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmp1z4_a0v5/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpx_d702y0/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpxxnc07yb/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpe35g42t6/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmpwzts2bk0/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the root could not be established as controller-bound: /home/kogies/binaryfacts/engine's c": 1,
+    "block: the driver's state file could not be read (/tmp/tmpk8v8gm1d/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the driver's state file could not be read (/tmp/tmp1zeajaia/line/factory/IMPLEMENT-STATE.j": 1,
+    "block: the root could not be established as controller-bound: /home/kogies/.factory/worktrees/ars": 12,
+    "block: the driver's state file could not be read (/tmp/tmpee5uzj_y/line/factory/IMPLEMENT-STATE.j": 1
+  },
+  "status": "done",
+  "note": "Issue #19: print_linux_report read the default-inbound stance itself and no test executed that line. Whole body moved into linux_report_text returning a String; print_linux_report is now one print! line. Seraph verified all 18 output literals identical and in the same order, so stdout is byte-identical; breaker byte-compared four report shapes and agreed. Authorship: architect planned, oracle wrote both tests, a separate builder implemented and was forbidden from touching an assertion. Beyond the brief, the builder deleted linux::default_policy::read once its last caller went, since -D warnings makes dead code a hard error; no caller remained anywhere and its doc prose was folded into read_from. Verified by mutation: replacing the stance read with None fails the_headless_report_reads_the_stance_through_the_supplied_sources. Breaker found one adjacent defect, deferred not fixed: main.rs:789 print_text_report open-codes its zero-hit filter and so lists the synthetic default-policy row and zero-hit WFP pseudo-filters as disable candidates on Windows --no-ui; ui.rs:84 is_zero_hit() is the existing guard it should use. Filed as issue #21 and updated with that diagnosis. Residue accepted: the Sources::system() line at each entry point is executed only by a real run, declared irreducible in the plan and now carrying a comment saying so; the new tests cover one report shape only, so the instrumentation, idle, note and unmeasurable sections remain unguarded.",
+  "outcome": {
+    "slices": "1",
+    "laps": "0",
+    "tests_added": "2",
+    "seraph_unsure": "0",
+    "breaker_verdict": "defect-found",
+    "findings_deferred": "1",
+    "guard_tests": "1"
+  },
+  "model_verdicts": [],
+  "model_mismatches": []
+}

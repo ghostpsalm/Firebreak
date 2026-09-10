@@ -45,16 +45,13 @@ impl Sources {
     }
 }
 
-/// Read the active backend's default inbound verdict. `None` means it could
-/// not be read — which is reported as unknown, never as a deny.
-pub fn read(backend: super::Backend) -> Option<DefaultInbound> {
-    read_from(backend, &Sources::system())
-}
-
-/// As [`read`], against the supplied sources. **Only the ufw branch reads
-/// them**: firewalld and raw nftables shell out to the live host and ignore
-/// `sources` entirely, so this seam does not make all three backends
-/// testable — just the one whose evidence is a file.
+/// Read the active backend's default inbound verdict from the supplied
+/// sources. `None` means it could not be read — which is reported as
+/// unknown, never as a deny.
+///
+/// **Only the ufw branch reads `sources`**: firewalld and raw nftables shell
+/// out to the live host and ignore them entirely, so this seam does not make
+/// all three backends testable — just the one whose evidence is a file.
 pub fn read_from(backend: super::Backend, sources: &Sources) -> Option<DefaultInbound> {
     match backend {
         super::Backend::Firewalld => {
