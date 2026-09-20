@@ -19,8 +19,11 @@ else
     # Linux read as dead. That is now expressed as #[cfg(windows)] instead, so
     # the native lint is signal again — and it is the ONLY thing that lints the
     # Linux backends at all. Do not drop it.
+    # --all-targets on both legs, so test code is linted too. The Windows leg
+    # went without it for a while, which meant Windows-only tests were never
+    # linted and nobody could see they were missing (#20).
     echo "-- windows target --"
-    cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+    cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
     echo "-- native (linux) target --"
     cargo clippy --all-targets -- -D warnings
 fi

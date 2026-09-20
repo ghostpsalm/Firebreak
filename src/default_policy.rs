@@ -19,7 +19,7 @@ pub enum Verdict {
     /// Refused, and the sender is told (ICMP admin-prohibited, TCP reset).
     /// Linux only: Windows Firewall's block drops in silence and has no
     /// reject to configure, so the variant does not exist there.
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(target_os = "linux")]
     Reject,
     /// Discarded in silence. Windows' default inbound block behaves this
     /// way, which is why it is not reported as a reject.
@@ -35,7 +35,7 @@ impl Verdict {
     /// vocabulary.
     pub fn action_label(self) -> &'static str {
         match self {
-            #[cfg(any(target_os = "linux", test))]
+            #[cfg(target_os = "linux")]
             Verdict::Reject => "Reject",
             Verdict::Drop => "Block",
             Verdict::Accept => "Allow",
@@ -45,7 +45,7 @@ impl Verdict {
     /// One word for the evidence header.
     pub fn headline(self) -> &'static str {
         match self {
-            #[cfg(any(target_os = "linux", test))]
+            #[cfg(target_os = "linux")]
             Verdict::Reject => "Rejected",
             Verdict::Drop => "Blocked",
             Verdict::Accept => "Allowed",
@@ -56,7 +56,7 @@ impl Verdict {
     /// the socket list, where the reader is asking "is this exposed?".
     pub fn socket_note(self) -> &'static str {
         match self {
-            #[cfg(any(target_os = "linux", test))]
+            #[cfg(target_os = "linux")]
             Verdict::Reject => "no rule — unsolicited inbound rejected",
             Verdict::Drop => "no rule — unsolicited inbound blocked",
             Verdict::Accept => "no rule — but the default is allow, so this is reachable",
@@ -67,7 +67,7 @@ impl Verdict {
 /// A host's default inbound verdict and where it was read from. The Linux
 /// readers produce this; Windows produces a [`WindowsStance`] instead,
 /// because there is one verdict per profile and they need not agree.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 pub struct DefaultInbound {
     pub verdict: Verdict,

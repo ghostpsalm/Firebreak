@@ -87,6 +87,14 @@ compiled on Linux read as dead; that is now stated as `#[cfg(windows)]`
 rather than suppressed, so the native lint is signal — and it is the only
 thing that lints `src/linux/` at all. Don't drop it.
 
+**Both legs are `--all-targets`**, so test code is linted on both. The
+Windows leg was not, which made Windows-only test code invisible to the gate
+— including the fact that there was none (#20). The cost of turning it on is
+that an item gated `#[cfg(any(target_os = "linux", test))]` whose only users
+are Linux-gated now reads as dead under `windows + test`. The fix is to gate
+it `#[cfg(target_os = "linux")]`, variant and match arms together — never an
+`#[allow(dead_code)]`, and never by taking `--all-targets` back off.
+
 CI (`.github/workflows/ci.yml`) runs the same gate on push/PR to `main`,
 installing `mingw-w64` first.
 
