@@ -96,9 +96,10 @@ Every rule is an *exception*; the verdict in the gaps between them is what
 decides whether a listening socket with no rule is exposed. `default_policy`
 reads it per platform — firewalld's `filter_INPUT` tail, ufw's
 `DEFAULT_INPUT_POLICY`, an nftables base-chain policy, or Windows'
-per-profile `DefaultInboundAction` — and it appears in three places: the
-evidence header, the socket list (replacing a bare `—`), and a synthetic row
-in the rule table.
+per-profile `DefaultInboundAction` — and it appears in four places: the
+evidence header, the socket list (replacing a bare `—`), a synthetic row
+in the rule table, and the headless report's `Unmatched inbound:` line on
+both platforms.
 
 - **Never assumed, per host.** Raw nftables is commonly `policy accept`, and
   a Windows profile with the firewall switched off is open whatever its
@@ -109,7 +110,10 @@ in the rule table.
   excluded from plans, quick actions, the zero-hit list, the CSV export and
   the rule count. `hits_known` is false — counters sit *after* the firewall's
   verdict, so refused traffic is counted nowhere, and zero would read as
-  "measured, never matched".
+  "measured, never matched". The `--no-ui` report excludes it from **every**
+  rule section rather than just the one it broke (`main::wfp_report_text`):
+  the filter is on the row set the whole function reads, so the next section
+  added there cannot reintroduce the defect.
 - **Windows keeps one per profile and they need not agree**, so it emits one
   row per distinct verdict rather than averaging them into a single claim.
 
