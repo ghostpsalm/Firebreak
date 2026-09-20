@@ -80,7 +80,7 @@ impl RuleRow {
     /// Firebreak could actually switch off. A rule nobody counted is not
     /// zero-hit but unknown; a WFP filter is not a rule at all, so neither
     /// belongs in the list a user works through deleting things from.
-    fn is_zero_hit(&self) -> bool {
+    pub(crate) fn is_zero_hit(&self) -> bool {
         self.hits_known && self.rule.is_editable() && self.total_hits() == 0
     }
     /// The synthetic catch-all row, which is not a rule: it must not be

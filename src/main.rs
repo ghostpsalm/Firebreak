@@ -779,16 +779,33 @@ fn linux_report_text(
 }
 
 fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
+    print!("{}", text_report(result));
+    Ok(())
+}
+
+/// As [`print_text_report`], rendered to a string so the whole report can be
+/// asserted on in tests.
+fn text_report(result: &pipeline::AnalysisResult) -> String {
+    use std::fmt::Write as _;
+
     let rows = &result.rows;
     let mut sorted: Vec<&ui::RuleRow> = rows.iter().collect();
     sorted.sort_by_key(|r| r.total_hits());
 
-    println!("\n=== Zero-hit enabled rules (disable candidates) ===");
-    for r in sorted
-        .iter()
-        .filter(|r| r.rule.is_enabled() && r.total_hits() == 0)
-    {
-        println!(
+    let mut out = String::new();
+
+    // The verdict in the gaps between the rules: without it, a reader
+    // cannot tell whether a listening socket with no rule is closed or
+    // wide open. Printed once, near the top, mirroring the Linux report's
+    // "Unmatched inbound:" line.
+    if let Some(d) = &result.ctx.default_inbound {
+        let _ = writeln!(out, "Default inbound: {} — {}", d.headline, d.detail);
+    }
+
+    let _ = writeln!(out, "\n=== Zero-hit enabled rules (disable candidates) ===");
+    for r in sorted.iter().filter(|r| r.is_zero_hit()) {
+        let _ = writeln!(
+            out,
             "  {} [{}] {} {} — scope: {}",
             r.rule.display_name,
             r.rule.direction,
@@ -798,14 +815,15 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         );
     }
 
-    println!("\n=== Used rules (most hits first) ===");
+    let _ = writeln!(out, "\n=== Used rules (most hits first) ===");
     for r in sorted.iter().rev() {
         if let Some(u) = r
             .usage
             .as_ref()
             .filter(|u| u.allow_count + u.block_count > 0)
         {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {:>8} allow / {:>6} block  {}  last {}  apps: {}{}",
                 u.allow_count,
                 u.block_count,
@@ -821,24 +839,30 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         }
     }
 
-    println!("\n=== Baseline flags ===");
+    let _ = writeln!(out, "\n=== Baseline flags ===");
     for r in rows
         .iter()
         .filter(|r| !r.flags.is_empty() && r.rule.is_enabled())
     {
         for f in &r.flags {
-            println!("  [{}] {} — {}", f.title, r.rule.display_name, f.advice);
+            let _ = writeln!(
+                out,
+                "  [{}] {} — {}",
+                f.title, r.rule.display_name, f.advice
+            );
         }
     }
 
     if !result.unmatched.is_empty() {
-        println!("\n=== Unattributed events (top 20) ===");
-        println!(
+        let _ = writeln!(out, "\n=== Unattributed events (top 20) ===");
+        let _ = writeln!(
+            out,
             "(traffic decided by a default/system WFP filter, not a firewall rule — \
              e.g. the default block policy)"
         );
         for u in result.unmatched.iter().take(20) {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {}: {} allow / {} block, apps: {}",
                 u.filter_name,
                 u.usage.allow_count,
@@ -855,11 +879,12 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     }
 
     if !result.listeners.is_empty() {
-        println!("\n=== Active listening sockets ===");
+        let _ = writeln!(out, "\n=== Active listening sockets ===");
         let mut sorted: Vec<_> = result.listeners.iter().collect();
         sorted.sort_by_key(|l| (l.proto.clone(), l.local_port));
         for l in sorted {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {:<4} {:>21}  {} (pid {})",
                 l.proto,
                 format!("{}:{}", l.local_address, l.local_port),
@@ -872,7 +897,7 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
             );
         }
     }
-    Ok(())
+    out
 }
 
 #[cfg(test)]
@@ -908,6 +933,120 @@ mod tests {
     fn db_takes_a_path() {
         let a = parse(&["--db", r"D:\fb.db"]);
         assert_eq!(a.db_path, std::path::PathBuf::from(r"D:\fb.db"));
+    }
+
+    /// The Windows/counter-based headless report (`--no-ui`'s `print_text_report`,
+    /// asserted through its string-returning twin `text_report`) (#21).
+    ///
+    /// `CLAUDE.md`'s "default-inbound row" excludes the synthetic catch-all
+    /// row from the zero-hit list because it is not a rule and cannot be
+    /// disabled; every other `result.rows` consumer already guarded on
+    /// `is_default_policy()`/`is_editable()` except this one.
+    mod windows_report {
+        use crate::model::RuleInfo;
+        use crate::pipeline::AnalysisResult;
+        use crate::ui::{AuditContext, DefaultInbound};
+        use crate::{default_policy, text_report};
+
+        fn rule_row(name: &str, hits: i64) -> crate::ui::RuleRow {
+            let rule = RuleInfo {
+                name: name.into(),
+                display_name: name.into(),
+                description: None,
+                enabled: "True".into(),
+                direction: "Inbound".into(),
+                action: "Block".into(),
+                profile: "Any".into(),
+                group: None,
+                program: None,
+                protocol: None,
+                local_port: None,
+                remote_port: None,
+                service: None,
+                remote_address: None,
+                policy_source: None,
+                policy_source_type: None,
+            };
+            crate::ui::RuleRow {
+                target_enabled: true,
+                target_scopes: crate::model::ScopeSet::from_rule(
+                    &rule,
+                    &crate::model::vocabulary(),
+                ),
+                rule,
+                usage: Some(crate::model::RuleUsage {
+                    block_count: hits,
+                    ..Default::default()
+                }),
+                flags: Vec::new(),
+                seen_apps: Vec::new(),
+                listening: Vec::new(),
+                reviewed: crate::ui::ReviewState::No,
+                hits_known: true,
+            }
+        }
+
+        /// The synthetic row is enabled and zero-hit by construction — the
+        /// exact shape the old `is_enabled() && total_hits() == 0` filter
+        /// would have caught. Only the `is_default_policy()`/`is_editable()`
+        /// guard keeps it out.
+        #[test]
+        fn the_default_policy_row_is_not_a_disable_candidate() {
+            let default_row = default_policy::row(
+                default_policy::Verdict::Drop,
+                "Any",
+                "read from GPO",
+                "everything else, blocked".into(),
+            );
+            let result = AnalysisResult {
+                rows: vec![rule_row("unused rule", 0), default_row],
+                ctx: AuditContext {
+                    default_inbound: Some(DefaultInbound {
+                        headline: "Blocked".into(),
+                        socket_note: String::new(),
+                        source: "GPO".into(),
+                        detail: "read from GPO".into(),
+                    }),
+                    ..Default::default()
+                },
+                unmatched: Vec::new(),
+                listeners: Vec::new(),
+            };
+
+            let text = text_report(&result);
+
+            assert!(
+                text.contains("Default inbound: Blocked — read from GPO"),
+                "{text}"
+            );
+            let zero_hit_section = text
+                .split("=== Zero-hit enabled rules")
+                .nth(1)
+                .and_then(|s| s.split("=== Used rules").next())
+                .unwrap();
+            assert!(
+                zero_hit_section.contains("unused rule"),
+                "a genuinely unused rule must still be listed:\n{zero_hit_section}"
+            );
+            assert!(
+                !zero_hit_section.contains("(default) everything else"),
+                "the synthetic row is not a rule and cannot be disabled:\n{zero_hit_section}"
+            );
+        }
+
+        #[test]
+        fn no_default_inbound_line_when_stance_is_unknown() {
+            let result = AnalysisResult {
+                rows: Vec::new(),
+                ctx: AuditContext::default(),
+                unmatched: Vec::new(),
+                listeners: Vec::new(),
+            };
+
+            let text = text_report(&result);
+
+            assert!(!text.contains("Default inbound:"), "{text}");
+        }
     }
 
     /// The headless report, rendered as text instead of printed (#19).
