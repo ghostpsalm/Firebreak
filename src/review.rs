@@ -20,7 +20,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 /// Bundle format version. A reader refuses a bundle newer than it knows

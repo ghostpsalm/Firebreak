@@ -19,8 +19,12 @@ else
     # Linux read as dead. That is now expressed as #[cfg(windows)] instead, so
     # the native lint is signal again — and it is the ONLY thing that lints the
     # Linux backends at all. Do not drop it.
+    #
+    # --all-targets on the windows leg too: it costs nothing extra to
+    # cross-compile (clippy type-checks, it doesn't link), and it's the only
+    # thing that ever lints a #[cfg(test)] mod under the windows target.
     echo "-- windows target --"
-    cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+    cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings
     echo "-- native (linux) target --"
     cargo clippy --all-targets -- -D warnings
 fi

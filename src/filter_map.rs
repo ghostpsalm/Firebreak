@@ -147,7 +147,7 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
 
 /// Decode a providerData blob as UTF-16LE text (lossy, control chars
 /// stripped) plus a hex dump capped for storage.
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn decode_provider_data(data: &[u8]) -> (String, String) {
     let utf16: Vec<u16> = data
         .as_chunks::<2>()
@@ -344,6 +344,46 @@ mod tests {
         let filters = vec![filter(11, "some filter", "unrelated provider data text")];
         let map = build_filter_rule_map(&filters, &rules);
         assert!(!map.contains_key(&11));
+    }
+
+    #[test]
+    fn decode_provider_data_empty_slice() {
+        assert_eq!(decode_provider_data(&[]), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn decode_provider_data_single_trailing_byte() {
+        // Odd length of 1: no complete UTF-16 pair, but the byte still hexes.
+        let (text, hex) = decode_provider_data(&[0x41]);
+        assert_eq!(text, "");
+        assert_eq!(hex, "41");
+    }
+
+    #[test]
+    fn decode_provider_data_odd_length_multibyte_blob() {
+        // "AB" as UTF-16LE plus a trailing byte that completes no pair.
+        let data = [0x41, 0x00, 0x42, 0x00, 0x99];
+        let (text, hex) = decode_provider_data(&data);
+        assert_eq!(text, "AB");
+        assert_eq!(hex, "4100420099");
+    }
+
+    #[test]
+    fn decode_provider_data_strips_embedded_control_characters() {
+        // "A" + U+0001 (control) + "B" as UTF-16LE: the control char is
+        // stripped from the text but every byte still appears in the hex.
+        let data = [0x41, 0x00, 0x01, 0x00, 0x42, 0x00];
+        let (text, hex) = decode_provider_data(&data);
+        assert_eq!(text, "AB");
+        assert_eq!(hex, "410001004200");
+    }
+
+    #[test]
+    fn decode_provider_data_hex_dump_capped_at_256_bytes() {
+        let data = vec![0xAB_u8; 300];
+        let (_text, hex) = decode_provider_data(&data);
+        assert_eq!(hex.len(), 512, "512 hex chars == 256 bytes, not 300");
+        assert_eq!(hex, "ab".repeat(256));
     }
 
     #[test]

@@ -33,9 +33,9 @@ use anyhow::{Context, Result};
 // Where each piece goes. All under `/usr`, so installing needs the root the
 // program already requires. Linux-only, like everything else here — a
 // desktop entry is not a thing Windows has.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub const DESKTOP_FILE: &str = "/usr/share/applications/firebreak.desktop";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub const ICON_FILE: &str = "/usr/share/icons/hicolor/256x256/apps/firebreak.png";
 #[cfg(any(target_os = "linux", test))]
 pub const LAUNCHER: &str = "/usr/libexec/firebreak-launch";
