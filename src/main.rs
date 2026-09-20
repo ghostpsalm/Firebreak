@@ -779,16 +779,64 @@ fn linux_report_text(
 }
 
 fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
-    let rows = &result.rows;
-    let mut sorted: Vec<&ui::RuleRow> = rows.iter().collect();
+    print!("{}", wfp_report_text(result));
+    Ok(())
+}
+
+/// As [`print_text_report`], rendered to a string instead of printed, so the
+/// whole report is assertable from any host — the Windows `--no-ui` path
+/// cannot be executed on the machine this is built on.
+///
+/// Every rule section reads a row set with the synthetic catch-all row
+/// filtered out. It is not a rule: `default_policy::row` sets
+/// `enabled: "True"` with no usage, so it satisfied "enabled and never
+/// matched" and the report invited the reader to disable the host's default
+/// inbound stance (#21). The verdict itself is not lost — it is stated on its
+/// own line, the way the Linux report states it.
+fn wfp_report_text(result: &pipeline::AnalysisResult) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    // The rules below are exceptions; this is the verdict in the gaps
+    // between them, and without it a reader cannot tell whether a listening
+    // socket with no rule is closed or wide open.
+    match &result.ctx.default_inbound {
+        Some(d) => {
+            let _ = writeln!(
+                out,
+                "Unmatched inbound: {} — {}",
+                d.headline.to_lowercase(),
+                d.detail
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "Unmatched inbound: could not be determined on this host"
+            );
+        }
+    }
+
+    // The boundary for every rule section here, present and future: rows a
+    // reader can actually act on.
+    let rules: Vec<&ui::RuleRow> = result
+        .rows
+        .iter()
+        .filter(|r| !r.is_default_policy())
+        .collect();
+    let mut sorted = rules.clone();
     sorted.sort_by_key(|r| r.total_hits());
 
-    println!("\n=== Zero-hit enabled rules (disable candidates) ===");
+    let _ = writeln!(out, "\n=== Zero-hit enabled rules (disable candidates) ===");
+    // `is_zero_hit` is the GUI's own predicate for this list: measured, never
+    // matched, and something Firebreak can switch off. A rule nobody counted
+    // is unknown rather than zero, and a WFP filter is not a rule.
     for r in sorted
         .iter()
-        .filter(|r| r.rule.is_enabled() && r.total_hits() == 0)
+        .filter(|r| r.is_zero_hit() && r.rule.is_enabled())
     {
-        println!(
+        let _ = writeln!(
+            out,
             "  {} [{}] {} {} — scope: {}",
             r.rule.display_name,
             r.rule.direction,
@@ -798,14 +846,15 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         );
     }
 
-    println!("\n=== Used rules (most hits first) ===");
+    let _ = writeln!(out, "\n=== Used rules (most hits first) ===");
     for r in sorted.iter().rev() {
         if let Some(u) = r
             .usage
             .as_ref()
             .filter(|u| u.allow_count + u.block_count > 0)
         {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {:>8} allow / {:>6} block  {}  last {}  apps: {}{}",
                 u.allow_count,
                 u.block_count,
@@ -821,24 +870,30 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
         }
     }
 
-    println!("\n=== Baseline flags ===");
-    for r in rows
+    let _ = writeln!(out, "\n=== Baseline flags ===");
+    for r in rules
         .iter()
         .filter(|r| !r.flags.is_empty() && r.rule.is_enabled())
     {
         for f in &r.flags {
-            println!("  [{}] {} — {}", f.title, r.rule.display_name, f.advice);
+            let _ = writeln!(
+                out,
+                "  [{}] {} — {}",
+                f.title, r.rule.display_name, f.advice
+            );
         }
     }
 
     if !result.unmatched.is_empty() {
-        println!("\n=== Unattributed events (top 20) ===");
-        println!(
+        let _ = writeln!(out, "\n=== Unattributed events (top 20) ===");
+        let _ = writeln!(
+            out,
             "(traffic decided by a default/system WFP filter, not a firewall rule — \
              e.g. the default block policy)"
         );
         for u in result.unmatched.iter().take(20) {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {}: {} allow / {} block, apps: {}",
                 u.filter_name,
                 u.usage.allow_count,
@@ -855,11 +910,12 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
     }
 
     if !result.listeners.is_empty() {
-        println!("\n=== Active listening sockets ===");
+        let _ = writeln!(out, "\n=== Active listening sockets ===");
         let mut sorted: Vec<_> = result.listeners.iter().collect();
         sorted.sort_by_key(|l| (l.proto.clone(), l.local_port));
         for l in sorted {
-            println!(
+            let _ = writeln!(
+                out,
                 "  {:<4} {:>21}  {} (pid {})",
                 l.proto,
                 format!("{}:{}", l.local_address, l.local_port),
@@ -872,7 +928,8 @@ fn print_text_report(result: &pipeline::AnalysisResult) -> Result<()> {
             );
         }
     }
-    Ok(())
+
+    out
 }
 
 #[cfg(test)]
@@ -1030,6 +1087,185 @@ mod tests {
             }
 
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// The Windows headless report (#21).
+    ///
+    /// The synthetic catch-all row is enabled and has no usage, so it
+    /// satisfied the old "enabled and never matched" filter and `--no-ui`
+    /// listed the host's default inbound stance as a disable candidate — the
+    /// one place CLAUDE.md's exclusion was never applied. Asserted as the
+    /// exact text of the whole report, because a stance line produced by a
+    /// helper nothing checks could be dropped again with nothing failing.
+    mod wfp_report {
+        use crate::{model::RuleInfo, pipeline::AnalysisResult, ui};
+
+        fn rule(name: &str, source_type: Option<&str>) -> RuleInfo {
+            RuleInfo {
+                name: name.into(),
+                display_name: name.into(),
+                description: None,
+                enabled: "True".into(),
+                direction: "Inbound".into(),
+                action: "Allow".into(),
+                profile: "Any".into(),
+                group: None,
+                program: None,
+                protocol: Some("TCP".into()),
+                local_port: Some("22".into()),
+                remote_port: None,
+                service: None,
+                remote_address: None,
+                policy_source: None,
+                policy_source_type: source_type.map(str::to_string),
+            }
+        }
+
+        /// An enabled rule with no usage at all: measured (Windows ingests
+        /// events, so "none" is an answer), never matched, editable.
+        fn row(rule: RuleInfo) -> ui::RuleRow {
+            ui::RuleRow {
+                target_enabled: true,
+                target_scopes: crate::model::ScopeSet::from_rule(
+                    &rule,
+                    &crate::model::vocabulary(),
+                ),
+                rule,
+                usage: None,
+                flags: Vec::new(),
+                seen_apps: Vec::new(),
+                listening: Vec::new(),
+                reviewed: ui::ReviewState::No,
+                hits_known: true,
+            }
+        }
+
+        fn result(rows: Vec<ui::RuleRow>, stance: Option<ui::DefaultInbound>) -> AnalysisResult {
+            AnalysisResult {
+                rows,
+                ctx: ui::AuditContext {
+                    default_inbound: stance,
+                    ..Default::default()
+                },
+                unmatched: Vec::new(),
+                listeners: Vec::new(),
+            }
+        }
+
+        /// Three zero-hit enabled rows reach the report; exactly one of them
+        /// is a disable candidate. The synthetic verdict row cannot be
+        /// disabled and is stated on its own line instead; the WFP filter is
+        /// not a rule Firebreak can touch. The row that *is* a candidate
+        /// still appears, so the filter has not simply emptied the list.
+        #[test]
+        fn the_default_policy_row_is_not_a_disable_candidate() {
+            let synthetic = crate::default_policy::row(
+                crate::default_policy::Verdict::Drop,
+                "Domain,Private,Public",
+                "Domain: DefaultInboundAction is Block",
+                "everything else".into(),
+            );
+            let res = result(
+                vec![
+                    row(rule("ssh", None)),
+                    row(rule("some-wfp-filter", Some(RuleInfo::SOURCE_TYPE_WFP))),
+                    synthetic,
+                ],
+                Some(ui::DefaultInbound {
+                    headline: "Blocked".into(),
+                    socket_note: "no rule — unsolicited inbound blocked".into(),
+                    source: "Windows Firewall profiles".into(),
+                    detail: "Domain: DefaultInboundAction is Block".into(),
+                }),
+            );
+
+            assert_eq!(
+                crate::wfp_report_text(&res),
+                concat!(
+                    "Unmatched inbound: blocked — Domain: DefaultInboundAction is Block\n",
+                    "\n=== Zero-hit enabled rules (disable candidates) ===\n",
+                    "  ssh [Inbound] Allow Any — scope: TCP 22\n",
+                    "\n=== Used rules (most hits first) ===\n",
+                    "\n=== Baseline flags ===\n",
+                )
+            );
+        }
+
+        /// The boundary itself, not one section's use of it. The zero-hit
+        /// section excludes the synthetic row on its own — `is_zero_hit`
+        /// wants an editable rule with counted hits, and the verdict row is
+        /// neither — so removing the `!is_default_policy()` filter changes
+        /// nothing there and nothing catches it. Every other section reads the
+        /// same set, and "Used rules" and "Baseline flags" gate on usage and
+        /// flags rather than on what kind of row it is.
+        ///
+        /// So this gives the synthetic row both, which no real one has, and
+        /// asserts it still appears nowhere: the verdict is stated on its own
+        /// line and never as something the reader can act on. Dropping the
+        /// filter turns this red.
+        #[test]
+        fn the_default_policy_row_reaches_no_section_however_it_is_furnished() {
+            let mut synthetic = crate::default_policy::row(
+                crate::default_policy::Verdict::Drop,
+                "Domain,Private,Public",
+                "Domain: DefaultInboundAction is Block",
+                "everything else".into(),
+            );
+            synthetic.usage = Some(crate::model::RuleUsage {
+                allow_count: 7,
+                block_count: 11,
+                last_seen: Some("2026-09-20".into()),
+                ..Default::default()
+            });
+            synthetic.flags = vec![crate::model::BaselineFlag {
+                title: "wide open",
+                advice: "narrow it",
+            }];
+            synthetic.hits_known = true;
+
+            let text = crate::wfp_report_text(&result(
+                vec![row(rule("ssh", None)), synthetic],
+                Some(ui::DefaultInbound {
+                    headline: "Blocked".into(),
+                    socket_note: "no rule — unsolicited inbound blocked".into(),
+                    source: "Windows Firewall profiles".into(),
+                    detail: "Domain: DefaultInboundAction is Block".into(),
+                }),
+            ));
+
+            assert!(
+                !text.contains("(default) everything else"),
+                "the synthetic verdict row is not a rule and must reach no rule section, \
+                 however it happens to be furnished — it is stated on its own line instead:\n{text}"
+            );
+            assert!(
+                text.starts_with("Unmatched inbound: blocked"),
+                "...and the verdict itself is not lost by excluding it:\n{text}"
+            );
+            assert!(
+                text.contains("  ssh [Inbound]"),
+                "...and a real rule is still reported:\n{text}"
+            );
+        }
+
+        /// A host whose profiles could not be read is reported as unknown,
+        /// never as a deny (CLAUDE.md, "The default-inbound row"). Claiming a
+        /// block that is not there tells someone an exposed port is shut.
+        #[test]
+        fn an_unreadable_stance_is_unknown_never_a_deny() {
+            let text = crate::wfp_report_text(&result(vec![row(rule("ssh", None))], None));
+
+            assert_eq!(
+                text,
+                concat!(
+                    "Unmatched inbound: could not be determined on this host\n",
+                    "\n=== Zero-hit enabled rules (disable candidates) ===\n",
+                    "  ssh [Inbound] Allow Any — scope: TCP 22\n",
+                    "\n=== Used rules (most hits first) ===\n",
+                    "\n=== Baseline flags ===\n",
+                )
+            );
         }
     }
 }
