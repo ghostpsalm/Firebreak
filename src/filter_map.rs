@@ -147,7 +147,12 @@ pub fn enumerate_filters() -> Result<Vec<FilterInfo>> {
 
 /// Decode a providerData blob as UTF-16LE text (lossy, control chars
 /// stripped) plus a hex dump capped for storage.
-#[cfg(windows)]
+///
+/// Byte arithmetic with nothing Windows-specific in it, so it is
+/// `any(windows, test)` and stays testable from a Linux host — it is the
+/// first hop of the providerData -> rule-name match, and a regression here
+/// mis-attributes filters silently rather than failing.
+#[cfg(any(windows, test))]
 fn decode_provider_data(data: &[u8]) -> (String, String) {
     let utf16: Vec<u16> = data
         .as_chunks::<2>()
@@ -161,6 +166,69 @@ fn decode_provider_data(data: &[u8]) -> (String, String) {
         .collect();
     let hex: String = data.iter().take(256).map(|b| format!("{b:02x}")).collect();
     (text, hex)
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// What WFP hands over: a blob of UTF-16LE.
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn an_empty_blob_decodes_to_nothing() {
+        // The common case on a real host: most built-in filters carry no
+        // providerData at all, and the caller passes an empty slice for them.
+        assert_eq!(decode_provider_data(&[]), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn a_single_byte_is_no_code_unit_but_is_still_evidence() {
+        // Half a UTF-16 code unit is not text, but the hex dump is what
+        // --dump-filters exists to show, so it must survive.
+        let (text, hex) = decode_provider_data(&[0x41]);
+        assert_eq!(text, "");
+        assert_eq!(hex, "41");
+    }
+
+    #[test]
+    fn an_odd_trailing_byte_is_dropped_from_text_and_kept_in_hex() {
+        // The case the chunking rewrite turns on: a blob whose length is not
+        // a multiple of two. The stray byte cannot become a code unit, but
+        // dropping it from the hex dump too would hide evidence.
+        let mut data = utf16le("AB");
+        data.push(0x43);
+        let (text, hex) = decode_provider_data(&data);
+        assert_eq!(text, "AB");
+        assert_eq!(hex, "4100420043");
+    }
+
+    #[test]
+    fn control_characters_are_stripped_from_the_text() {
+        // providerData is a struct, not a string: NULs and record separators
+        // sit between the fields and would make the text unreadable.
+        let (text, _) = decode_provider_data(&utf16le("A\u{0}B\nC\u{1}"));
+        assert_eq!(text, "ABC");
+    }
+
+    #[test]
+    fn a_realistic_blob_yields_a_token_the_rule_map_can_match() {
+        // The whole point of decoding: the InstanceID has to come out in a
+        // form candidate_tokens recognises, or no filter maps by providerData.
+        let guid = "{a1b2c3d4-0000-1111-2222-333344445555}";
+        let (text, _) = decode_provider_data(&utf16le(&format!("\u{0}v2.31\u{0}{guid}\u{0}")));
+        assert!(candidate_tokens(&text).contains(&guid), "got text {text:?}");
+    }
+
+    #[test]
+    fn the_hex_dump_is_capped_at_256_bytes() {
+        // Stored per filter, thousands per host — the cap is what keeps the
+        // dump from dominating the database.
+        let (_, hex) = decode_provider_data(&vec![0xab; 300]);
+        assert_eq!(hex.len(), 512);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
