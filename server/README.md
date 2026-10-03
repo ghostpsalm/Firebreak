@@ -152,10 +152,12 @@ deno task check     # fmt, lint, typecheck, test
 deno task dev       # run it locally on 127.0.0.1:8787
 ```
 
-`./scripts/gate.sh` runs the same checks, and skips them with a loud warning
-if Deno is not installed so a Windows contributor working on the client is
-not blocked by the collector's toolchain. CI installs Deno, so they are never
-skipped there.
+`./scripts/gate.sh` runs the same checks, and **requires Deno to do it**: it
+checks for `deno` before any leg runs and exits non-zero naming it if absent.
+It used to skip these checks with a warning and still pass, so a Windows
+contributor working on the client was not blocked by the collector's
+toolchain — but that made a green gate meaningless about the collector on any
+machine without Deno (#23). Install it (https://deno.land) to gate.
 
 ## When something goes wrong
 

@@ -24,9 +24,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # The gate skips the collector's checks when Deno is missing, so CI
-      # installs it — otherwise the one place that must never skip them
-      # would be the place that silently did.
+      # Deno is a prerequisite of the gate: without it the gate refuses to
+      # run at all rather than skipping the collector's checks (#23). So this
+      # step is not a convenience — the gate step below fails without it.
       - name: Install Deno (for the collector under server/)
         uses: denoland/setup-deno@v2
         with:

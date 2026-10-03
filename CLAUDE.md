@@ -222,9 +222,15 @@ its own sandbox (`--no-remote`, `--allow-net` scoped to one port,
 `--allow-read`/`--allow-write` scoped to one directory) rather than relying on
 systemd alone. Its tests are `*_test.ts` beside each module — the Deno idiom,
 and the one place this repo's inline-tests convention does not apply.
-**`./scripts/gate.sh` covers it too**, skipping with a loud warning when Deno
-is absent so a Windows contributor is not blocked; CI installs Deno so the
-checks are never silently skipped there.
+**`./scripts/gate.sh` covers it too**, and **Deno is a prerequisite, not an
+optional leg**: the gate checks for it (with `cargo`) before any leg runs and
+exits non-zero naming what is missing. It used to skip the collector with a
+warning and still exit 0 so a Windows client contributor was not blocked by
+the collector's toolchain; that was a false green over the one component that
+parses input from the internet, on any machine without Deno — CI that lost
+its setup step, a fresh checkout, four recorded Factory runs (#23). The cost
+is that a Deno-less box cannot gate at all, which is the intended trade.
+Don't reintroduce the conditional.
 
 ## Installing
 
