@@ -3,6 +3,37 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Prerequisites, checked up front and all at once: a tool the gate needs and
+# cannot find is a red gate, never a skip. A gate that exits 0 after printing
+# "NOT checked" is a false green on every machine the tool is missing from —
+# CI that lost its setup step, a fresh checkout, four recorded Factory runs
+# (#23). Reported before any leg runs so the answer arrives in a second
+# rather than after several minutes of clippy, and with no opt-out: an escape
+# hatch is the same defect under a nicer name.
+echo "== prerequisites =="
+missing=()
+if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --version >/dev/null 2>&1 || missing+=("rustfmt (rustup component add rustfmt)")
+    cargo clippy --version >/dev/null 2>&1 || missing+=("clippy (rustup component add clippy)")
+    # The Windows clippy leg below cross-compiles: it needs the target's std
+    # (looked up in the sysroot, so this holds without rustup too) and a
+    # mingw-w64 gcc, which bundled SQLite's C build calls even for a check.
+    if [[ "${OS:-}" != "Windows_NT" ]]; then
+        [[ -d "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnu" ]] ||
+            missing+=("the x86_64-pc-windows-gnu target (rustup target add x86_64-pc-windows-gnu)")
+        command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 ||
+            missing+=("x86_64-w64-mingw32-gcc (mingw-w64)")
+    fi
+else
+    missing+=("cargo (Rust toolchain — https://rustup.rs)")
+fi
+command -v deno >/dev/null 2>&1 || missing+=("deno (the collector under server/ — see server/README.md)")
+if (( ${#missing[@]} )); then
+    echo "!! the gate cannot run — missing:" >&2
+    printf '!!   - %s\n' "${missing[@]}" >&2
+    exit 1
+fi
+
 echo "== cargo fmt --check =="
 cargo fmt --check
 
@@ -35,20 +66,15 @@ cargo test
 # above touches it. It parses input from the internet — the last thing it
 # should be is the unlinted corner of the repo.
 #
-# Skipped with a warning rather than failing when Deno is absent: a Windows
-# contributor building the client should not be blocked by the collector's
-# toolchain. CI has Deno, so the checks are never quietly skipped there.
+# Unconditional: deno is a prerequisite above, so there is no second code
+# path here that could skip the one component nothing else checks.
 echo "== receiver (server/receiver) =="
-if command -v deno >/dev/null 2>&1; then
-    (
-        cd server/receiver
-        deno fmt --check
-        deno lint
-        deno check main.ts
-        deno test --allow-read --allow-write --allow-env
-    )
-else
-    echo "!! deno not installed — collector NOT checked (see server/README.md)"
-fi
+(
+    cd server/receiver
+    deno fmt --check
+    deno lint
+    deno check main.ts
+    deno test --allow-read --allow-write --allow-env
+)
 
 echo "== gate passed =="
