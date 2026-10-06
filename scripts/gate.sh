@@ -12,7 +12,21 @@ cd "$(dirname "$0")/.."
 # hatch is the same defect under a nicer name.
 echo "== prerequisites =="
 missing=()
-command -v cargo >/dev/null 2>&1 || missing+=("cargo (Rust toolchain — https://rustup.rs)")
+if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --version >/dev/null 2>&1 || missing+=("rustfmt (rustup component add rustfmt)")
+    cargo clippy --version >/dev/null 2>&1 || missing+=("clippy (rustup component add clippy)")
+    # The Windows clippy leg below cross-compiles: it needs the target's std
+    # (looked up in the sysroot, so this holds without rustup too) and a
+    # mingw-w64 gcc, which bundled SQLite's C build calls even for a check.
+    if [[ "${OS:-}" != "Windows_NT" ]]; then
+        [[ -d "$(rustc --print sysroot)/lib/rustlib/x86_64-pc-windows-gnu" ]] ||
+            missing+=("the x86_64-pc-windows-gnu target (rustup target add x86_64-pc-windows-gnu)")
+        command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1 ||
+            missing+=("x86_64-w64-mingw32-gcc (mingw-w64)")
+    fi
+else
+    missing+=("cargo (Rust toolchain — https://rustup.rs)")
+fi
 command -v deno >/dev/null 2>&1 || missing+=("deno (the collector under server/ — see server/README.md)")
 if (( ${#missing[@]} )); then
     echo "!! the gate cannot run — missing:" >&2

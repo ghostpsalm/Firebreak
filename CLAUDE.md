@@ -223,8 +223,9 @@ its own sandbox (`--no-remote`, `--allow-net` scoped to one port,
 systemd alone. Its tests are `*_test.ts` beside each module — the Deno idiom,
 and the one place this repo's inline-tests convention does not apply.
 **`./scripts/gate.sh` covers it too**, and **Deno is a prerequisite, not an
-optional leg**: the gate checks for it (with `cargo`) before any leg runs and
-exits non-zero naming what is missing. It used to skip the collector with a
+optional leg**: the gate checks for it — and for the Rust toolchain each
+leg needs, including the Windows cross-compile target and mingw-w64 — before
+any leg runs, and exits non-zero naming everything missing. It used to skip the collector with a
 warning and still exit 0 so a Windows client contributor was not blocked by
 the collector's toolchain; that was a false green over the one component that
 parses input from the internet, on any machine without Deno — CI that lost
