@@ -168,74 +168,6 @@ fn decode_provider_data(data: &[u8]) -> (String, String) {
     (text, hex)
 }
 
-#[cfg(test)]
-mod decode_tests {
-    use super::*;
-
-    /// What WFP hands over: a blob of UTF-16LE.
-    fn utf16le(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
-    }
-
-    #[test]
-    fn an_empty_blob_decodes_to_nothing() {
-        // The common case on a real host: most built-in filters carry no
-        // providerData at all, and the caller passes an empty slice for them.
-        assert_eq!(decode_provider_data(&[]), (String::new(), String::new()));
-    }
-
-    #[test]
-    fn a_single_byte_is_no_code_unit_but_is_still_evidence() {
-        // Half a UTF-16 code unit is not text, but the hex dump is what
-        // --dump-filters exists to show, so it must survive.
-        let (text, hex) = decode_provider_data(&[0x41]);
-        assert_eq!(text, "");
-        assert_eq!(hex, "41");
-    }
-
-    #[test]
-    fn an_odd_trailing_byte_is_dropped_from_text_and_kept_in_hex() {
-        // The case the chunking rewrite turns on: a blob whose length is not
-        // a multiple of two. The stray byte cannot become a code unit, but
-        // dropping it from the hex dump too would hide evidence.
-        let mut data = utf16le("AB");
-        data.push(0x43);
-        let (text, hex) = decode_provider_data(&data);
-        assert_eq!(text, "AB");
-        assert_eq!(hex, "4100420043");
-    }
-
-    #[test]
-    fn control_characters_are_stripped_from_the_text() {
-        // providerData is a struct, not a string: NULs and record separators
-        // sit between the fields and would make the text unreadable.
-        let (text, _) = decode_provider_data(&utf16le("A\u{0}B\nC\u{1}"));
-        assert_eq!(text, "ABC");
-    }
-
-    #[test]
-    fn a_realistic_blob_yields_a_token_the_rule_map_can_match() {
-        // The whole point of decoding: the InstanceID has to come out in a
-        // form candidate_tokens recognises, or no filter maps by providerData.
-        let guid = "{a1b2c3d4-0000-1111-2222-333344445555}";
-        let (text, _) = decode_provider_data(&utf16le(&format!("\u{0}v2.31\u{0}{guid}\u{0}")));
-        assert!(candidate_tokens(&text).contains(&guid), "got text {text:?}");
-    }
-
-    #[test]
-    fn the_hex_dump_is_capped_at_256_bytes() {
-        // Stored per filter, thousands per host — the cap is what keeps the
-        // dump from dominating the database.
-        //
-        // The content, not only the length: a cap that truncated the right
-        // number of characters out of the wrong bytes would satisfy a length
-        // assertion exactly as well, and the dump is evidence.
-        let (_, hex) = decode_provider_data(&vec![0xab; 300]);
-        assert_eq!(hex.len(), 512);
-        assert_eq!(hex, "ab".repeat(256));
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MappedVia {
     ProviderData,
@@ -343,100 +275,6 @@ pub fn build_filter_rule_map(
     map
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn filter(id: u64, name: &str, provider_data: &str) -> FilterInfo {
-        FilterInfo {
-            filter_id: id,
-            name: name.into(),
-            description: String::new(),
-            provider_data_utf16: provider_data.into(),
-            provider_data_hex: String::new(),
-            provider_context_key: String::new(),
-            layer_key: String::new(),
-            provider_key: String::new(),
-            provider_name: String::new(),
-        }
-    }
-
-    fn rule(name: &str, display: &str) -> RuleInfo {
-        RuleInfo {
-            name: name.into(),
-            display_name: display.into(),
-            description: None,
-            enabled: "True".into(),
-            direction: "Inbound".into(),
-            action: "Allow".into(),
-            profile: "Any".into(),
-            group: None,
-            program: None,
-            protocol: None,
-            local_port: None,
-            remote_port: None,
-            service: None,
-            remote_address: None,
-            policy_source: None,
-            policy_source_type: None,
-        }
-    }
-
-    #[test]
-    fn tokens_extract_braced_guids_and_identifier_runs() {
-        let toks = candidate_tokens("v2.31|{a1b2c3d4-0000-1111-2222-333344445555}|CoreNet-DNS-Out");
-        assert!(toks.contains(&"{a1b2c3d4-0000-1111-2222-333344445555}"));
-        assert!(toks.contains(&"CoreNet-DNS-Out"));
-    }
-
-    #[test]
-    fn tokens_drop_short_runs() {
-        // identifier runs below MIN_TOKEN_LEN must not become candidates
-        let toks = candidate_tokens("ab cd efg something-longer");
-        assert!(!toks.contains(&"ab"));
-        assert!(!toks.contains(&"efg"));
-        assert!(toks.contains(&"something-longer"));
-    }
-
-    #[test]
-    fn provider_data_matches_by_exact_token() {
-        let rules = vec![
-            rule("CoreNet-DNS-Out", "DNS out"),
-            rule("{guid-1}", "Other"),
-        ];
-        let filters = vec![filter(10, "irrelevant", "x|CoreNet-DNS-Out|y")];
-        let map = build_filter_rule_map(&filters, &rules);
-        assert_eq!(map[&10].0, "CoreNet-DNS-Out");
-        assert_eq!(map[&10].1, MappedVia::ProviderData);
-    }
-
-    #[test]
-    fn short_rule_name_cannot_swallow_filters() {
-        // regression for C-04: a rule named "e" used to substring-match everything
-        let rules = vec![rule("e", "Tiny rule")];
-        let filters = vec![filter(11, "some filter", "unrelated provider data text")];
-        let map = build_filter_rule_map(&filters, &rules);
-        assert!(!map.contains_key(&11));
-    }
-
-    #[test]
-    fn display_name_fallback_only_when_unambiguous() {
-        let rules = vec![
-            rule("{id-1}", "Shared Name"),
-            rule("{id-2}", "Shared Name"),
-            rule("{id-3}", "Unique Name"),
-        ];
-        let filters = vec![filter(20, "Shared Name", ""), filter(21, "Unique Name", "")];
-        let map = build_filter_rule_map(&filters, &rules);
-        assert!(
-            !map.contains_key(&20),
-            "ambiguous display name must not match"
-        );
-        assert_eq!(map[&21].0, "{id-3}");
-        assert_eq!(map[&21].1, MappedVia::DisplayName);
-    }
-}
-
 /// Providers whose filters *are* Windows Firewall rules. Their filters are
 /// already represented in the rule table, so surfacing them again as
 /// pseudo-rules would double-count.
@@ -509,10 +347,50 @@ pub fn pseudo_rules(filters: &[FilterInfo]) -> Vec<RuleInfo> {
 }
 
 #[cfg(test)]
-mod pseudo_tests {
+mod tests {
     use super::*;
 
-    fn filter(name: &str, provider: &str) -> FilterInfo {
+    /// What WFP hands over: a blob of UTF-16LE.
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect()
+    }
+
+    fn filter(id: u64, name: &str, provider_data: &str) -> FilterInfo {
+        FilterInfo {
+            filter_id: id,
+            name: name.into(),
+            description: String::new(),
+            provider_data_utf16: provider_data.into(),
+            provider_data_hex: String::new(),
+            provider_context_key: String::new(),
+            layer_key: String::new(),
+            provider_key: String::new(),
+            provider_name: String::new(),
+        }
+    }
+
+    fn rule(name: &str, display: &str) -> RuleInfo {
+        RuleInfo {
+            name: name.into(),
+            display_name: display.into(),
+            description: None,
+            enabled: "True".into(),
+            direction: "Inbound".into(),
+            action: "Allow".into(),
+            profile: "Any".into(),
+            group: None,
+            program: None,
+            protocol: None,
+            local_port: None,
+            remote_port: None,
+            service: None,
+            remote_address: None,
+            policy_source: None,
+            policy_source_type: None,
+        }
+    }
+
+    fn provider_filter(name: &str, provider: &str) -> FilterInfo {
         FilterInfo {
             filter_id: 1,
             name: name.into(),
@@ -527,19 +405,131 @@ mod pseudo_tests {
     }
 
     #[test]
+    fn an_empty_blob_decodes_to_nothing() {
+        // The common case on a real host: most built-in filters carry no
+        // providerData at all, and the caller passes an empty slice for them.
+        assert_eq!(decode_provider_data(&[]), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn a_single_byte_is_no_code_unit_but_is_still_evidence() {
+        // Half a UTF-16 code unit is not text, but the hex dump is what
+        // --dump-filters exists to show, so it must survive.
+        let (text, hex) = decode_provider_data(&[0x41]);
+        assert_eq!(text, "");
+        assert_eq!(hex, "41");
+    }
+
+    #[test]
+    fn an_odd_trailing_byte_is_dropped_from_text_and_kept_in_hex() {
+        // The case the chunking rewrite turns on: a blob whose length is not
+        // a multiple of two. The stray byte cannot become a code unit, but
+        // dropping it from the hex dump too would hide evidence.
+        let mut data = utf16le("AB");
+        data.push(0x43);
+        let (text, hex) = decode_provider_data(&data);
+        assert_eq!(text, "AB");
+        assert_eq!(hex, "4100420043");
+    }
+
+    #[test]
+    fn control_characters_are_stripped_from_the_text() {
+        // providerData is a struct, not a string: NULs and record separators
+        // sit between the fields and would make the text unreadable.
+        let (text, _) = decode_provider_data(&utf16le("A\u{0}B\nC\u{1}"));
+        assert_eq!(text, "ABC");
+    }
+
+    #[test]
+    fn a_realistic_blob_yields_a_token_the_rule_map_can_match() {
+        // The whole point of decoding: the InstanceID has to come out in a
+        // form candidate_tokens recognises, or no filter maps by providerData.
+        let guid = "{a1b2c3d4-0000-1111-2222-333344445555}";
+        let (text, _) = decode_provider_data(&utf16le(&format!("\u{0}v2.31\u{0}{guid}\u{0}")));
+        assert!(candidate_tokens(&text).contains(&guid), "got text {text:?}");
+    }
+
+    #[test]
+    fn the_hex_dump_is_capped_at_256_bytes() {
+        // Stored per filter, thousands per host — the cap is what keeps the
+        // dump from dominating the database.
+        //
+        // The content, not only the length: a cap that truncated the right
+        // number of characters out of the wrong bytes would satisfy a length
+        // assertion exactly as well, and the dump is evidence.
+        let (_, hex) = decode_provider_data(&vec![0xab; 300]);
+        assert_eq!(hex.len(), 512);
+        assert_eq!(hex, "ab".repeat(256));
+    }
+
+    #[test]
+    fn tokens_extract_braced_guids_and_identifier_runs() {
+        let toks = candidate_tokens("v2.31|{a1b2c3d4-0000-1111-2222-333344445555}|CoreNet-DNS-Out");
+        assert!(toks.contains(&"{a1b2c3d4-0000-1111-2222-333344445555}"));
+        assert!(toks.contains(&"CoreNet-DNS-Out"));
+    }
+
+    #[test]
+    fn tokens_drop_short_runs() {
+        // identifier runs below MIN_TOKEN_LEN must not become candidates
+        let toks = candidate_tokens("ab cd efg something-longer");
+        assert!(!toks.contains(&"ab"));
+        assert!(!toks.contains(&"efg"));
+        assert!(toks.contains(&"something-longer"));
+    }
+
+    #[test]
+    fn provider_data_matches_by_exact_token() {
+        let rules = vec![
+            rule("CoreNet-DNS-Out", "DNS out"),
+            rule("{guid-1}", "Other"),
+        ];
+        let filters = vec![filter(10, "irrelevant", "x|CoreNet-DNS-Out|y")];
+        let map = build_filter_rule_map(&filters, &rules);
+        assert_eq!(map[&10].0, "CoreNet-DNS-Out");
+        assert_eq!(map[&10].1, MappedVia::ProviderData);
+    }
+
+    #[test]
+    fn short_rule_name_cannot_swallow_filters() {
+        // regression for C-04: a rule named "e" used to substring-match everything
+        let rules = vec![rule("e", "Tiny rule")];
+        let filters = vec![filter(11, "some filter", "unrelated provider data text")];
+        let map = build_filter_rule_map(&filters, &rules);
+        assert!(!map.contains_key(&11));
+    }
+
+    #[test]
+    fn display_name_fallback_only_when_unambiguous() {
+        let rules = vec![
+            rule("{id-1}", "Shared Name"),
+            rule("{id-2}", "Shared Name"),
+            rule("{id-3}", "Unique Name"),
+        ];
+        let filters = vec![filter(20, "Shared Name", ""), filter(21, "Unique Name", "")];
+        let map = build_filter_rule_map(&filters, &rules);
+        assert!(
+            !map.contains_key(&20),
+            "ambiguous display name must not match"
+        );
+        assert_eq!(map[&21].0, "{id-3}");
+        assert_eq!(map[&21].1, MappedVia::DisplayName);
+    }
+
+    #[test]
     fn firewall_filters_are_not_duplicated_as_pseudo_rules() {
         // They are already in the rule table; showing them twice would make
         // the same rule look like two separate things filtering traffic.
         let f = vec![
-            filter("Block inbound", "Microsoft Windows Defender Firewall"),
-            filter("x", "MPSSVC"),
+            provider_filter("Block inbound", "Microsoft Windows Defender Firewall"),
+            provider_filter("x", "MPSSVC"),
         ];
         assert!(pseudo_rules(&f).is_empty());
     }
 
     #[test]
     fn other_security_products_become_read_only_rows() {
-        let f = vec![filter(
+        let f = vec![provider_filter(
             "Network Protection",
             "Microsoft Defender for Endpoint",
         )];
@@ -558,8 +548,8 @@ mod pseudo_tests {
         // the firewall rules the table exists to show.
         let mut f = Vec::new();
         for _ in 0..500 {
-            f.push(filter("Network Protection", "Defender"));
-            f.push(filter("Tunnel", "SomeVPN"));
+            f.push(provider_filter("Network Protection", "Defender"));
+            f.push(provider_filter("Tunnel", "SomeVPN"));
         }
         let rules = pseudo_rules(&f);
         assert_eq!(rules.len(), 2);
@@ -568,7 +558,7 @@ mod pseudo_tests {
 
     #[test]
     fn filters_without_a_provider_are_os_plumbing_and_are_dropped() {
-        let mut f = filter("Boot time default", "");
+        let mut f = provider_filter("Boot time default", "");
         f.provider_key = String::new();
         assert!(pseudo_rules(&[f]).is_empty());
     }
